@@ -350,7 +350,7 @@ function AuthModal({ onClose, onSignIn, onSignUp }) {
   );
 }
 
-function CollectionPicker({ tool, collections, onToggle, onCreate, onClose }) {
+function CollectionPicker({ tool, collections, onToggle, onCreate, onClose, error }) {
   const [name, setName] = useState("");
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-6" onClick={onClose} style={{backdropFilter:"blur(4px)"}}>
@@ -376,6 +376,7 @@ function CollectionPicker({ tool, collections, onToggle, onCreate, onClose }) {
           <input value={name} onChange={(e)=>setName(e.target.value)} placeholder="New collection name" className="flex-1 rounded-xl px-3 py-2.5 text-sm outline-none" style={{ background:"#0F0F16", border:`1px solid ${C.cardBorder}`, color:C.text }} />
           <button onClick={()=>{ if(name.trim()){ onCreate(name); setName(""); } }} className="text-sm font-medium px-4 py-2.5 rounded-xl shrink-0" style={{ background:C.violet, color:"white" }}>Create</button>
         </div>
+        {error && <p className="text-xs mt-2 flex items-center gap-1.5" style={{ color:"#FB7185" }}><Icon.alert /> {error}</p>}
       </div>
     </div>
   );
@@ -400,6 +401,7 @@ function RynovaApp() {
   const [openCollectionId, setOpenCollectionId] = useState(null);
   const [newCollectionName, setNewCollectionName] = useState("");
   const [pickerTool, setPickerTool] = useState(null);
+  const [collectionError, setCollectionError] = useState("");
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
   const [query, setQuery] = useState("");
@@ -444,7 +446,7 @@ function RynovaApp() {
         if (!catRes.ok || !toolRes.ok) throw new Error("Could not load data from Supabase.");
         setCategories(await catRes.json());
         const rawTools = await toolRes.json();
-        const deduped = Array.from(new Map(rawTools.map(t => [t.slug, t])).values());
+        const deduped = Array.from(new Map(rawTools.map(t => [t.name.trim().toLowerCase(), t])).values());
         setTools(deduped);
       } catch (err) { setLoadError(err.message); }
       finally { setLoading(false); }
@@ -476,6 +478,7 @@ function RynovaApp() {
 
   async function createCollection(name) {
     if (!session || !name.trim()) return;
+    setCollectionError("");
     try {
       const res = await fetch(`${REST}/collections`, {
         method: "POST",
@@ -483,9 +486,15 @@ function RynovaApp() {
         body: JSON.stringify({ user_id: session.user.id, name: name.trim() }),
       });
       const data = await res.json();
+      if (!res.ok) {
+        setCollectionError(data?.message || data?.hint || "Could not create collection.");
+        return;
+      }
       setCollections((prev) => [...prev, { ...data[0], collection_tools: [] }]);
       setNewCollectionName("");
-    } catch {}
+    } catch (err) {
+      setCollectionError(err.message || "Network error while creating collection.");
+    }
   }
 
   async function deleteCollection(id) {
@@ -731,10 +740,11 @@ function RynovaApp() {
 
                 {dashboardTab === "collections" && !openCollectionId && (
                   <React.Fragment>
-                    <div className="flex items-center gap-2 mb-5">
+                    <div className="flex items-center gap-2 mb-2">
                       <input value={newCollectionName} onChange={(e)=>setNewCollectionName(e.target.value)} placeholder="New collection name (e.g. Content Creator Stack)" className="flex-1 rounded-xl px-3 py-2.5 text-sm outline-none" style={{ background:C.card, border:`1px solid ${C.cardBorder}`, color:C.text }} />
                       <button onClick={()=>createCollection(newCollectionName)} className="text-sm font-medium px-4 py-2.5 rounded-xl shrink-0" style={{ background:C.violet, color:"white" }}>Create</button>
                     </div>
+                    {collectionError && <p className="text-xs mb-3 flex items-center gap-1.5" style={{ color:"#FB7185" }}><Icon.alert /> {collectionError}</p>}
                     {collections.length === 0 ? (
                       <div className="text-center py-16">
                         <p className="font-medium mb-1" style={{ color:C.text }}>No collections yet.</p>
@@ -791,7 +801,7 @@ function RynovaApp() {
 
       {selectedTool && <ToolDetail tool={selectedTool} onClose={closeTool} saved={savedIds.has(selectedTool.id)} onToggleSave={toggleSave} onOpenCollections={(t)=>{ if(!session) return openAuth(); setPickerTool(t); }} />}
       {authOpen && <AuthModal onClose={closeAuth} onSignIn={signIn} onSignUp={signUp} />}
-      {pickerTool && <CollectionPicker tool={pickerTool} collections={collections} onToggle={toggleInCollection} onCreate={(name)=>createCollection(name)} onClose={()=>setPickerTool(null)} />}
+      {pickerTool && <CollectionPicker tool={pickerTool} collections={collections} onToggle={toggleInCollection} onCreate={(name)=>createCollection(name)} onClose={()=>{setPickerTool(null); setCollectionError("");}} error={collectionError} />}
 
       <footer className="py-6" style={{ borderTop:`1px solid ${C.cardBorder}` }}>
         <div className="max-w-3xl mx-auto px-5 text-xs flex items-center justify-between" style={{ color:C.faint }}>
