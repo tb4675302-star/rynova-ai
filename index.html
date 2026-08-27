@@ -241,7 +241,7 @@ function FeaturedCard({ tool, saved, onToggleSave, onOpen }) {
   );
 }
 
-function ToolDetail({ tool, onClose, saved, onToggleSave }) {
+function ToolDetail({ tool, onClose, saved, onToggleSave, onOpenCollections }) {
   if (!tool) return null;
   return (
     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60" onClick={onClose} style={{backdropFilter:"blur(4px)"}}>
@@ -289,6 +289,7 @@ function ToolDetail({ tool, onClose, saved, onToggleSave }) {
           </div>
           <div className="flex items-center gap-3 pt-2">
             <a href={tool.website_url} target="_blank" rel="noopener noreferrer" className="flex-1 text-center text-sm font-medium py-3 rounded-xl" style={{ background:C.violet, color:"white" }}>Visit official website</a>
+            <button onClick={()=>onOpenCollections(tool)} className="px-4 py-3 rounded-xl text-sm font-medium" style={{ border:`1px solid ${C.cardBorder}`, color:C.text }}>+ Collection</button>
             <button onClick={()=>onToggleSave(tool)} className="px-4 py-3 rounded-xl" style={{ border:`1px solid ${C.cardBorder}`, color: saved?C.violet:C.sub }}><Icon.bookmark size={18} filled={saved} /></button>
           </div>
         </div>
@@ -349,6 +350,37 @@ function AuthModal({ onClose, onSignIn, onSignUp }) {
   );
 }
 
+function CollectionPicker({ tool, collections, onToggle, onCreate, onClose }) {
+  const [name, setName] = useState("");
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-6" onClick={onClose} style={{backdropFilter:"blur(4px)"}}>
+      <div className="w-full max-w-sm rounded-3xl p-6" style={{ background:C.card, border:`1px solid ${C.cardBorder}` }} onClick={(e)=>e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="font-semibold text-lg" style={{ color:C.text, fontFamily:"'Space Grotesk', sans-serif" }}>Add to collection</h2>
+          <button onClick={onClose} className="p-1.5 rounded-full" style={{ color:C.sub }}><Icon.x size={16} /></button>
+        </div>
+        <p className="text-xs mb-3" style={{ color:C.faint }}>{tool.name}</p>
+        <div className="flex flex-col gap-2 max-h-52 overflow-y-auto mb-4">
+          {collections.length === 0 && <p className="text-sm" style={{ color:C.faint }}>No collections yet — create one below.</p>}
+          {collections.map((c) => {
+            const isIn = c.collection_tools?.some((ct) => ct.tool_id === tool.id);
+            return (
+              <button key={c.id} onClick={() => onToggle(c.id, tool.id)} className="flex items-center justify-between rounded-xl px-3 py-2.5" style={{ background: isIn ? C.violetSoft : "#0F0F16", border:`1px solid ${isIn?C.violet:C.cardBorder}` }}>
+                <span className="text-sm font-medium" style={{ color:C.text }}>{c.name}</span>
+                {isIn && <span style={{color:C.violet}}><Icon.check /></span>}
+              </button>
+            );
+          })}
+        </div>
+        <div className="flex items-center gap-2">
+          <input value={name} onChange={(e)=>setName(e.target.value)} placeholder="New collection name" className="flex-1 rounded-xl px-3 py-2.5 text-sm outline-none" style={{ background:"#0F0F16", border:`1px solid ${C.cardBorder}`, color:C.text }} />
+          <button onClick={()=>{ if(name.trim()){ onCreate(name); setName(""); } }} className="text-sm font-medium px-4 py-2.5 rounded-xl shrink-0" style={{ background:C.violet, color:"white" }}>Create</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 const suggestionChips = [
   { emoji: "🖼️", label: "Remove image background" },
   { emoji: "🎨", label: "Generate AI art" },
@@ -363,6 +395,11 @@ function RynovaApp() {
   const [categories, setCategories] = useState([]);
   const [tools, setTools] = useState([]);
   const [savedIds, setSavedIds] = useState(new Set());
+  const [collections, setCollections] = useState([]);
+  const [dashboardTab, setDashboardTab] = useState("saved");
+  const [openCollectionId, setOpenCollectionId] = useState(null);
+  const [newCollectionName, setNewCollectionName] = useState("");
+  const [pickerTool, setPickerTool] = useState(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
   const [query, setQuery] = useState("");
@@ -425,7 +462,64 @@ function RynovaApp() {
       } catch {}
     }
     loadSaved();
+    loadCollections();
   }, [session]);
+
+  async function loadCollections() {
+    if (!session) return setCollections([]);
+    try {
+      const res = await fetch(`${REST}/collections?select=*,collection_tools(tool_id)&user_id=eq.${session.user.id}&order=created_at.asc`, { headers: headers() });
+      const data = await res.json();
+      setCollections(data);
+    } catch {}
+  }
+
+  async function createCollection(name) {
+    if (!session || !name.trim()) return;
+    try {
+      const res = await fetch(`${REST}/collections`, {
+        method: "POST",
+        headers: { ...headers(), Prefer: "return=representation" },
+        body: JSON.stringify({ user_id: session.user.id, name: name.trim() }),
+      });
+      const data = await res.json();
+      setCollections((prev) => [...prev, { ...data[0], collection_tools: [] }]);
+      setNewCollectionName("");
+    } catch {}
+  }
+
+  async function deleteCollection(id) {
+    setCollections((prev) => prev.filter((c) => c.id !== id));
+    if (openCollectionId === id) setOpenCollectionId(null);
+    try {
+      await fetch(`${REST}/collections?id=eq.${id}`, { method: "DELETE", headers: headers() });
+    } catch {}
+  }
+
+  async function toggleInCollection(collectionId, toolId) {
+    const col = collections.find((c) => c.id === collectionId);
+    const isIn = col?.collection_tools?.some((ct) => ct.tool_id === toolId);
+    setCollections((prev) => prev.map((c) => {
+      if (c.id !== collectionId) return c;
+      return {
+        ...c,
+        collection_tools: isIn
+          ? c.collection_tools.filter((ct) => ct.tool_id !== toolId)
+          : [...c.collection_tools, { tool_id: toolId }],
+      };
+    }));
+    try {
+      if (isIn) {
+        await fetch(`${REST}/collection_tools?collection_id=eq.${collectionId}&tool_id=eq.${toolId}`, { method: "DELETE", headers: headers() });
+      } else {
+        await fetch(`${REST}/collection_tools`, {
+          method: "POST",
+          headers: { ...headers(), Prefer: "return=minimal" },
+          body: JSON.stringify({ collection_id: collectionId, tool_id: toolId }),
+        });
+      }
+    } catch {}
+  }
 
   async function toggleSave(tool) {
     if (!session) return openAuth();
@@ -606,32 +700,98 @@ function RynovaApp() {
 
         {view === "dashboard" && (
           <section className="pt-8">
-            <h1 className="text-2xl font-semibold mb-1" style={{ color:C.text, fontFamily:"'Space Grotesk', sans-serif" }}>Your saved tools</h1>
-            <p className="text-sm mb-6" style={{ color:C.faint }}>{savedIds.size} tool{savedIds.size===1?"":"s"} saved</p>
+            <h1 className="text-2xl font-semibold mb-1" style={{ color:C.text, fontFamily:"'Space Grotesk', sans-serif" }}>Your library</h1>
             <button onClick={()=>goTo("home")} className="text-xs mb-4 block" style={{ color:C.faint }}>← Back to home</button>
             {!session ? (
               <div className="text-center py-16">
-                <p className="font-medium mb-1" style={{ color:C.text }}>Log in to see your saved tools.</p>
+                <p className="font-medium mb-1" style={{ color:C.text }}>Log in to see your saved tools and collections.</p>
                 <button onClick={openAuth} className="text-sm font-medium px-4 py-2 rounded-full mt-3" style={{ background:C.violet, color:"white" }}>Log in</button>
               </div>
-            ) : savedIds.size === 0 ? (
-              <div className="text-center py-16">
-                <p className="font-medium mb-1" style={{ color:C.text }}>No saved tools yet.</p>
-                <p className="text-sm" style={{ color:C.faint }}>Tap the bookmark icon on any tool to save it here.</p>
-              </div>
             ) : (
-              <div className="flex flex-col gap-3">
-                {tools.filter(t => savedIds.has(t.id)).map(t => (
-                  <ToolRow key={t.id} tool={t} query="" saved={true} onToggleSave={toggleSave} onOpen={openTool} />
-                ))}
-              </div>
+              <React.Fragment>
+                <div className="flex gap-2 mb-5">
+                  <button onClick={()=>{setDashboardTab("saved"); setOpenCollectionId(null);}} className="text-sm font-medium px-4 py-2 rounded-full" style={dashboardTab==="saved"?{background:C.violet,color:"white"}:{border:`1px solid ${C.cardBorder}`,color:C.sub}}>Saved Tools</button>
+                  <button onClick={()=>{setDashboardTab("collections"); setOpenCollectionId(null);}} className="text-sm font-medium px-4 py-2 rounded-full" style={dashboardTab==="collections"?{background:C.violet,color:"white"}:{border:`1px solid ${C.cardBorder}`,color:C.sub}}>Collections</button>
+                </div>
+
+                {dashboardTab === "saved" && (
+                  savedIds.size === 0 ? (
+                    <div className="text-center py-16">
+                      <p className="font-medium mb-1" style={{ color:C.text }}>No saved tools yet.</p>
+                      <p className="text-sm" style={{ color:C.faint }}>Tap the bookmark icon on any tool to save it here.</p>
+                    </div>
+                  ) : (
+                    <div className="flex flex-col gap-3">
+                      {tools.filter(t => savedIds.has(t.id)).map(t => (
+                        <ToolRow key={t.id} tool={t} query="" saved={true} onToggleSave={toggleSave} onOpen={openTool} />
+                      ))}
+                    </div>
+                  )
+                )}
+
+                {dashboardTab === "collections" && !openCollectionId && (
+                  <React.Fragment>
+                    <div className="flex items-center gap-2 mb-5">
+                      <input value={newCollectionName} onChange={(e)=>setNewCollectionName(e.target.value)} placeholder="New collection name (e.g. Content Creator Stack)" className="flex-1 rounded-xl px-3 py-2.5 text-sm outline-none" style={{ background:C.card, border:`1px solid ${C.cardBorder}`, color:C.text }} />
+                      <button onClick={()=>createCollection(newCollectionName)} className="text-sm font-medium px-4 py-2.5 rounded-xl shrink-0" style={{ background:C.violet, color:"white" }}>Create</button>
+                    </div>
+                    {collections.length === 0 ? (
+                      <div className="text-center py-16">
+                        <p className="font-medium mb-1" style={{ color:C.text }}>No collections yet.</p>
+                        <p className="text-sm" style={{ color:C.faint }}>Create one above, or use "+ Collection" on any tool.</p>
+                      </div>
+                    ) : (
+                      <div className="flex flex-col gap-3">
+                        {collections.map((c) => (
+                          <div key={c.id} className="rounded-2xl p-4 flex items-center justify-between" style={{ background:C.card, border:`1px solid ${C.cardBorder}` }}>
+                            <button onClick={()=>setOpenCollectionId(c.id)} className="text-left flex-1">
+                              <p className="font-medium" style={{ color:C.text }}>{c.name}</p>
+                              <p className="text-xs" style={{ color:C.faint }}>{(c.collection_tools||[]).length} tool{(c.collection_tools||[]).length===1?"":"s"}</p>
+                            </button>
+                            <button onClick={()=>deleteCollection(c.id)} className="p-2 rounded-full" style={{ color:C.faint }}><Icon.x size={16} /></button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </React.Fragment>
+                )}
+
+                {dashboardTab === "collections" && openCollectionId && (
+                  <React.Fragment>
+                    <button onClick={()=>setOpenCollectionId(null)} className="text-xs mb-4 block" style={{ color:C.faint }}>← Back to collections</button>
+                    {(() => {
+                      const col = collections.find(c => c.id === openCollectionId);
+                      const ids = new Set((col?.collection_tools||[]).map(ct => ct.tool_id));
+                      const colTools = tools.filter(t => ids.has(t.id));
+                      return (
+                        <React.Fragment>
+                          <h2 className="text-lg font-semibold mb-4" style={{ color:C.text, fontFamily:"'Space Grotesk', sans-serif" }}>{col?.name}</h2>
+                          {colTools.length === 0 ? (
+                            <div className="text-center py-16">
+                              <p className="font-medium mb-1" style={{ color:C.text }}>No tools in this collection yet.</p>
+                              <p className="text-sm" style={{ color:C.faint }}>Use "+ Collection" on any tool to add it here.</p>
+                            </div>
+                          ) : (
+                            <div className="flex flex-col gap-3">
+                              {colTools.map(t => (
+                                <ToolRow key={t.id} tool={t} query="" saved={savedIds.has(t.id)} onToggleSave={toggleSave} onOpen={openTool} />
+                              ))}
+                            </div>
+                          )}
+                        </React.Fragment>
+                      );
+                    })()}
+                  </React.Fragment>
+                )}
+              </React.Fragment>
             )}
           </section>
         )}
       </div>
 
-      {selectedTool && <ToolDetail tool={selectedTool} onClose={closeTool} saved={savedIds.has(selectedTool.id)} onToggleSave={toggleSave} />}
+      {selectedTool && <ToolDetail tool={selectedTool} onClose={closeTool} saved={savedIds.has(selectedTool.id)} onToggleSave={toggleSave} onOpenCollections={(t)=>{ if(!session) return openAuth(); setPickerTool(t); }} />}
       {authOpen && <AuthModal onClose={closeAuth} onSignIn={signIn} onSignUp={signUp} />}
+      {pickerTool && <CollectionPicker tool={pickerTool} collections={collections} onToggle={toggleInCollection} onCreate={(name)=>createCollection(name)} onClose={()=>setPickerTool(null)} />}
 
       <footer className="py-6" style={{ borderTop:`1px solid ${C.cardBorder}` }}>
         <div className="max-w-3xl mx-auto px-5 text-xs flex items-center justify-between" style={{ color:C.faint }}>
