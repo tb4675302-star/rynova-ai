@@ -1,0 +1,654 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Rynova AI</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/react@18/umd/react.production.min.js" crossorigin></script>
+<script src="https://cdn.jsdelivr.net/npm/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://cdn.jsdelivr.net/npm/@babel/standalone@7/babel.min.js"></script>
+<script>
+  window.addEventListener('error', function (e) {
+    var box = document.getElementById('boot-error');
+    if (!box) {
+      box = document.createElement('div');
+      box.id = 'boot-error';
+      box.style.cssText = 'position:fixed;inset:0;background:#0A0A0F;color:#FCA5A5;font-family:monospace;font-size:13px;padding:20px;z-index:9999;overflow:auto;white-space:pre-wrap;';
+      document.body.appendChild(box);
+    }
+    box.textContent += 'ERROR: ' + (e.message || e) + '\n' + (e.filename ? (e.filename + ':' + e.lineno) : '') + '\n\n';
+  });
+</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@500&display=swap" rel="stylesheet">
+<style>
+  body { margin:0; background:#0A0A0F; }
+  ::placeholder { color:#6C6C7E; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useMemo } = React;
+
+/* ---------------------------------------------------------
+   RYNOVA AI — single-file build, wired to a real Supabase
+   project (REST + Auth API, no SDK / build step needed).
+   Session lives in memory only — refreshing the page logs
+   you out. Swap in supabase-js with persistSession for a
+   full production deploy.
+--------------------------------------------------------- */
+
+const SUPABASE_URL = "https://quabufcifiushxpxudnf.supabase.co";
+const SUPABASE_ANON_KEY = "sb_publishable_lqVunSZ6hq86RQdJi1UwNA_xrXfZeDc";
+const REST = `${SUPABASE_URL}/rest/v1`;
+const AUTH = `${SUPABASE_URL}/auth/v1`;
+
+function useSupabase() {
+  const [session, setSession] = useState(null);
+
+  const headers = (json = true) => {
+    const h = { apikey: SUPABASE_ANON_KEY };
+    h.Authorization = `Bearer ${session?.access_token || SUPABASE_ANON_KEY}`;
+    if (json) h["Content-Type"] = "application/json";
+    return h;
+  };
+
+  async function signUp(email, password) {
+    const res = await fetch(`${AUTH}/signup`, {
+      method: "POST",
+      headers: headers(),
+      body: JSON.stringify({ email, password }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data?.msg || data?.error_description || "Sign up failed");
+    if (data.access_token) setSession({ access_token: data.access_token, user: data.user });
+    return data;
+  }
+
+  async function signIn(email, password) {
+    const res = await fetch(`${AUTH}/token?grant_type=password`, {
+      method: "POST",
+      headers: headers(),
+      body: JSON.stringify({ email, password }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data?.error_description || data?.msg || "Login failed");
+    setSession({ access_token: data.access_token, user: data.user });
+    return data;
+  }
+
+  function signOut() {
+    setSession(null);
+  }
+
+  return { session, headers, signUp, signIn, signOut };
+}
+
+/* ---------------- Match scoring (deterministic, not random) ---------------- */
+function scoreTool(tool, query) {
+  if (!query.trim()) return null;
+  const q = query.toLowerCase();
+  const terms = q.split(/\s+/).filter((t) => t.length > 2);
+  if (terms.length === 0) return null;
+
+  const haystacks = [
+    { text: tool.name?.toLowerCase() || "", weight: 3 },
+    { text: tool.short_description?.toLowerCase() || "", weight: 2 },
+    { text: tool.long_description?.toLowerCase() || "", weight: 1 },
+    { text: (tool.use_cases || []).join(" ").toLowerCase(), weight: 3 },
+    { text: (tool.features || []).join(" ").toLowerCase(), weight: 2 },
+    { text: tool.categories?.name?.toLowerCase() || "", weight: 2 },
+    { text: tool.best_for?.toLowerCase() || "", weight: 2 },
+  ];
+
+  let hits = 0;
+  const maxHits = terms.length * haystacks.reduce((a, h) => a + h.weight, 0);
+  for (const term of terms) {
+    for (const h of haystacks) {
+      if (h.text.includes(term)) hits += h.weight;
+    }
+  }
+  if (hits === 0) return null;
+  const coverage = Math.min(1, hits / (maxHits * 0.25));
+  const qualityBoost = (tool.rating / 5) * 0.15 + (tool.popularity_score / 100) * 0.1;
+  const raw = coverage * 0.75 + qualityBoost;
+  return Math.max(52, Math.min(99, Math.round(raw * 100)));
+}
+
+function reasonFor(tool, query) {
+  const terms = query.toLowerCase().split(/\s+/).filter((t) => t.length > 2);
+  const matchedUseCases = (tool.use_cases || []).filter((u) => terms.some((t) => u.toLowerCase().includes(t)));
+  const matchedFeatures = (tool.features || []).filter((f) => terms.some((t) => f.toLowerCase().includes(t)));
+  if (matchedUseCases.length) return `Matches your need for ${matchedUseCases.slice(0, 2).join(" and ").toLowerCase()}.`;
+  if (matchedFeatures.length) return `Stands out for ${matchedFeatures.slice(0, 2).join(" and ").toLowerCase()}.`;
+  return `Strong overall fit for this category.`;
+}
+
+/* ---------------- tokens ---------------- */
+const C = {
+  bg: "#0A0A0F", card: "#15151D", cardBorder: "#25252F", cardBorderHover: "#3F3F52",
+  violet: "#8B5CF6", violetSoft: "rgba(139,92,246,0.12)",
+  text: "#F3F3F7", sub: "#9B9BAC", faint: "#6C6C7E",
+};
+
+const pricingStyle = {
+  free: { label: "Free", bg: "rgba(16,185,129,0.14)", fg: "#34D399" },
+  freemium: { label: "Freemium", bg: "rgba(59,130,246,0.14)", fg: "#60A5FA" },
+  paid: { label: "Paid", bg: "rgba(251,146,60,0.14)", fg: "#FB923C" },
+  open_source: { label: "Open Source", bg: "rgba(139,92,246,0.14)", fg: "#A78BFA" },
+};
+
+/* ---------------- tiny inline-SVG icon set (no external icon package needed) ---------------- */
+const Icon = {
+  search: (p) => <svg viewBox="0 0 24 24" width={p.size||16} height={p.size||16} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>,
+  bookmark: (p) => <svg viewBox="0 0 24 24" width={p.size||16} height={p.size||16} fill={p.filled?"currentColor":"none"} stroke="currentColor" strokeWidth="2"><path d="M19 21l-7-5-7 5V5a2 2 0 012-2h10a2 2 0 012 2z"/></svg>,
+  x: (p) => <svg viewBox="0 0 24 24" width={p.size||16} height={p.size||16} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>,
+  star: (p) => <svg viewBox="0 0 24 24" width={p.size||12} height={p.size||12} fill="#FBBF24" stroke="#FBBF24"><polygon points="12 2 15 9 22 9.5 17 14.5 18.5 22 12 18 5.5 22 7 14.5 2 9.5 9 9"/></svg>,
+  check: (p) => <svg viewBox="0 0 24 24" width={p.size||14} height={p.size||14} fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><polyline points="20 6 9 17 4 12"/></svg>,
+  alert: (p) => <svg viewBox="0 0 24 24" width={p.size||14} height={p.size||14} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>,
+  chevron: (p) => <svg viewBox="0 0 24 24" width={p.size||14} height={p.size||14} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><polyline points="9 18 15 12 9 6"/></svg>,
+  login: (p) => <svg viewBox="0 0 24 24" width={p.size||14} height={p.size||14} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M15 3h4a2 2 0 012 2v14a2 2 0 01-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg>,
+  spark: (p) => <svg viewBox="0 0 24 24" width={p.size||13} height={p.size||13} fill="currentColor"><path d="M12 2l1.9 5.6L19.5 9.5l-5.6 1.9L12 17l-1.9-5.6L4.5 9.5l5.6-1.9z"/></svg>,
+};
+
+function Pill({ children, style }) {
+  return <span className="text-[10.5px] font-medium px-2 py-1 rounded-full" style={{ background:"rgba(255,255,255,0.05)", color:C.sub, ...style }}>{children}</span>;
+}
+function PricingPill({ type }) {
+  const v = pricingStyle[type] || { label:type, bg:"rgba(255,255,255,0.06)", fg:C.sub };
+  return <Pill style={{ background:v.bg, color:v.fg }}>{v.label}</Pill>;
+}
+function MatchBadge({ score }) {
+  return <span className="text-[11px] font-semibold px-2.5 py-1 rounded-full shrink-0" style={{ background:C.violetSoft, color:"#C4B5FD", fontFamily:"'IBM Plex Mono', monospace" }}>{score}% match</span>;
+}
+function Logo({ name, size=44 }) {
+  return <div className="rounded-2xl flex items-center justify-center font-semibold shrink-0" style={{ width:size, height:size, background:"linear-gradient(135deg, #8B5CF6, #4F46E5)", color:"white", fontFamily:"'Space Grotesk', sans-serif", fontSize:size*0.4 }}>{name?.[0]}</div>;
+}
+
+function ToolRow({ tool, query, saved, onToggleSave, onOpen }) {
+  const score = query ? scoreTool(tool, query) : null;
+  return (
+    <div className="rounded-2xl p-4 flex flex-col gap-3 cursor-pointer transition-colors"
+      style={{ background:C.card, border:`1px solid ${C.cardBorder}` }}
+      onClick={() => onOpen(tool)}>
+      <div className="flex items-start gap-3">
+        <Logo name={tool.name} />
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center justify-between gap-2">
+            <h3 className="font-semibold truncate" style={{ color:C.text, fontFamily:"'Space Grotesk', sans-serif" }}>{tool.name}</h3>
+            {score !== null ? <MatchBadge score={score} /> : tool.trending ? <Pill style={{ background:"rgba(139,92,246,0.14)", color:"#C4B5FD" }}>Trending</Pill> : null}
+          </div>
+          <p className="text-xs" style={{ color:C.faint }}>{tool.categories?.name}</p>
+        </div>
+      </div>
+      <p className="text-sm leading-relaxed" style={{ color:C.sub }}>{tool.short_description}</p>
+      {score !== null && <p className="text-xs" style={{ color:"#A78BFA" }}>{reasonFor(tool, query)}</p>}
+      <div className="flex items-center gap-1.5 flex-wrap">
+        <PricingPill type={tool.pricing_type} />
+        <Pill>{tool.skill_level}</Pill>
+        <span className="flex items-center gap-1 text-xs ml-1" style={{ color:C.sub }}>
+          <Icon.star /> {tool.rating} <span style={{ color:C.faint }}>({(tool.review_count||0).toLocaleString()})</span>
+        </span>
+      </div>
+      <div className="flex items-center gap-2 pt-1">
+        <a href={tool.website_url} target="_blank" rel="noopener noreferrer" onClick={(e)=>e.stopPropagation()}
+          className="flex-1 text-center text-sm font-medium py-2.5 rounded-xl transition-opacity hover:opacity-90"
+          style={{ background:C.violet, color:"white" }}>Open Website</a>
+        <button onClick={(e)=>{e.stopPropagation(); onToggleSave(tool);}}
+          className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0" style={{ border:`1px solid ${C.cardBorder}`, color: saved?C.violet:C.sub }}>
+          <Icon.bookmark filled={saved} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function FeaturedCard({ tool, saved, onToggleSave, onOpen }) {
+  if (!tool) return null;
+  return (
+    <div className="rounded-3xl p-6" style={{ background:"linear-gradient(160deg, rgba(139,92,246,0.14), rgba(21,21,29,0.9))", border:`1px solid ${C.cardBorder}` }}>
+      <div className="flex items-center gap-2 mb-4">
+        <Pill style={{ background:"rgba(139,92,246,0.2)", color:"#C4B5FD" }}>Featured</Pill>
+        <Pill>Editor's Pick</Pill>
+      </div>
+      <div className="flex items-start gap-4">
+        <Logo name={tool.name} size={56} />
+        <div className="min-w-0">
+          <h3 className="text-xl font-semibold" style={{ color:C.text, fontFamily:"'Space Grotesk', sans-serif" }}>{tool.name}</h3>
+          <p className="text-sm" style={{ color:C.sub }}>{tool.short_description}</p>
+        </div>
+      </div>
+      <div className="flex items-center gap-2 flex-wrap mt-4">
+        <span className="flex items-center gap-1 text-sm font-medium" style={{ color:C.text }}><Icon.star size={14} /> {tool.rating}</span>
+        <span className="text-xs" style={{ color:C.faint }}>{(tool.review_count||0).toLocaleString()} reviews</span>
+        <PricingPill type={tool.pricing_type} />
+        <Pill>{tool.skill_level}</Pill>
+      </div>
+      <ul className="mt-4 flex flex-col gap-1.5">
+        {(tool.features||[]).slice(0,3).map((f,i)=>(
+          <li key={i} className="text-sm flex items-center gap-2" style={{ color:C.sub }}><span style={{color:C.violet}}><Icon.check /></span> {f}</li>
+        ))}
+      </ul>
+      <div className="flex items-center gap-2 mt-5">
+        <button onClick={()=>onOpen(tool)} className="flex-1 text-center text-sm font-medium py-3 rounded-xl" style={{ background:C.violet, color:"white" }}>View Full Details</button>
+        <a href={tool.website_url} target="_blank" rel="noopener noreferrer" className="px-4 py-3 rounded-xl text-sm font-medium" style={{ border:`1px solid ${C.cardBorder}`, color:C.text }}>Visit site</a>
+        <button onClick={()=>onToggleSave(tool)} className="w-11 h-11 rounded-xl flex items-center justify-center shrink-0" style={{ border:`1px solid ${C.cardBorder}`, color: saved?C.violet:C.sub }}><Icon.bookmark filled={saved} /></button>
+      </div>
+    </div>
+  );
+}
+
+function ToolDetail({ tool, onClose, saved, onToggleSave }) {
+  if (!tool) return null;
+  return (
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60" onClick={onClose} style={{backdropFilter:"blur(4px)"}}>
+      <div className="w-full sm:max-w-2xl sm:rounded-3xl rounded-t-3xl max-h-[90vh] overflow-y-auto" style={{ background:C.card, border:`1px solid ${C.cardBorder}` }} onClick={(e)=>e.stopPropagation()}>
+        <div className="sticky top-0 flex items-center justify-between px-6 py-4" style={{ background:C.card, borderBottom:`1px solid ${C.cardBorder}` }}>
+          <div className="flex items-center gap-3">
+            <Logo name={tool.name} size={40} />
+            <div>
+              <h2 className="font-semibold" style={{ color:C.text, fontFamily:"'Space Grotesk', sans-serif" }}>{tool.name}</h2>
+              <p className="text-xs" style={{ color:C.faint }}>{tool.categories?.name}</p>
+            </div>
+          </div>
+          <button onClick={onClose} className="p-2 rounded-full" style={{ color:C.sub }}><Icon.x size={18} /></button>
+        </div>
+        <div className="p-6 flex flex-col gap-6">
+          <p className="leading-relaxed" style={{ color:C.sub }}>{tool.long_description || tool.short_description}</p>
+          <div className="flex items-center gap-2 flex-wrap">
+            <PricingPill type={tool.pricing_type} />
+            <Pill>{tool.pricing_details}</Pill>
+            <span className="flex items-center gap-1 text-xs" style={{ color:C.sub }}><Icon.star size={12} /> {tool.rating} ({(tool.review_count||0).toLocaleString()})</span>
+          </div>
+          <div className="grid sm:grid-cols-2 gap-6">
+            <div>
+              <h4 className="text-xs font-semibold uppercase tracking-wide mb-2" style={{ color:C.faint }}>Key features</h4>
+              <ul className="space-y-1.5">
+                {(tool.features||[]).map((f,i)=>(<li key={i} className="text-sm flex items-start gap-2" style={{ color:C.sub }}><span style={{color:C.violet, marginTop:2}}><Icon.check /></span> {f}</li>))}
+              </ul>
+            </div>
+            <div>
+              <h4 className="text-xs font-semibold uppercase tracking-wide mb-2" style={{ color:C.faint }}>Best for</h4>
+              <p className="text-sm" style={{ color:C.sub }}>{tool.best_for}</p>
+              <h4 className="text-xs font-semibold uppercase tracking-wide mt-4 mb-2" style={{ color:C.faint }}>Platforms</h4>
+              <p className="text-sm" style={{ color:C.sub }}>{(tool.platforms||[]).join(", ")}</p>
+            </div>
+          </div>
+          <div className="grid sm:grid-cols-2 gap-6">
+            <div>
+              <h4 className="text-xs font-semibold uppercase tracking-wide mb-2" style={{ color:C.faint }}>Strengths</h4>
+              <ul className="space-y-1.5">{(tool.pros||[]).map((p,i)=>(<li key={i} className="text-sm" style={{ color:"#34D399" }}>+ {p}</li>))}</ul>
+            </div>
+            <div>
+              <h4 className="text-xs font-semibold uppercase tracking-wide mb-2" style={{ color:C.faint }}>Limitations</h4>
+              <ul className="space-y-1.5">{(tool.cons||[]).map((c,i)=>(<li key={i} className="text-sm" style={{ color:"#FB7185" }}>− {c}</li>))}</ul>
+            </div>
+          </div>
+          <div className="flex items-center gap-3 pt-2">
+            <a href={tool.website_url} target="_blank" rel="noopener noreferrer" className="flex-1 text-center text-sm font-medium py-3 rounded-xl" style={{ background:C.violet, color:"white" }}>Visit official website</a>
+            <button onClick={()=>onToggleSave(tool)} className="px-4 py-3 rounded-xl" style={{ border:`1px solid ${C.cardBorder}`, color: saved?C.violet:C.sub }}><Icon.bookmark size={18} filled={saved} /></button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AuthModal({ onClose, onSignIn, onSignUp }) {
+  const [mode, setMode] = useState("signin");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [success, setSuccess] = useState("");
+
+  async function submit(e) {
+    e.preventDefault();
+    setError(""); setSuccess("");
+    if (!email.includes("@")) return setError("Enter a valid email address.");
+    if (password.length < 6) return setError("Password must be at least 6 characters.");
+    setLoading(true);
+    try {
+      if (mode === "signin") { await onSignIn(email, password); onClose(); }
+      else {
+        const data = await onSignUp(email, password);
+        if (data?.access_token) onClose();
+        else setSuccess("Account created — check your email to confirm before signing in.");
+      }
+    } catch (err) { setError(err.message); }
+    finally { setLoading(false); }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-6" onClick={onClose} style={{backdropFilter:"blur(4px)"}}>
+      <div className="w-full max-w-sm rounded-3xl p-6" style={{ background:C.card, border:`1px solid ${C.cardBorder}` }} onClick={(e)=>e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-6">
+          <h2 className="font-semibold text-lg" style={{ color:C.text, fontFamily:"'Space Grotesk', sans-serif" }}>{mode === "signin" ? "Log in" : "Create account"}</h2>
+          <button onClick={onClose} className="p-1.5 rounded-full" style={{ color:C.sub }}><Icon.x size={16} /></button>
+        </div>
+        <form onSubmit={submit} className="flex flex-col gap-3">
+          <input type="email" placeholder="Email" value={email} onChange={(e)=>setEmail(e.target.value)} className="rounded-xl px-4 py-3 text-sm outline-none" style={{ background:"#0F0F16", border:`1px solid ${C.cardBorder}`, color:C.text }} />
+          <input type="password" placeholder="Password" value={password} onChange={(e)=>setPassword(e.target.value)} className="rounded-xl px-4 py-3 text-sm outline-none" style={{ background:"#0F0F16", border:`1px solid ${C.cardBorder}`, color:C.text }} />
+          {error && <p className="text-xs flex items-center gap-1.5" style={{ color:"#FB7185" }}><Icon.alert /> {error}</p>}
+          {success && <p className="text-xs" style={{ color:"#34D399" }}>{success}</p>}
+          <button type="submit" disabled={loading} className="text-sm font-medium py-3 rounded-xl flex items-center justify-center gap-2 disabled:opacity-60" style={{ background:C.violet, color:"white" }}>
+            {loading ? "Please wait..." : (mode === "signin" ? "Log in" : "Sign up")}
+          </button>
+        </form>
+        <p className="text-xs text-center mt-4" style={{ color:C.faint }}>
+          {mode === "signin" ? "New to Rynova?" : "Already have an account?"}{" "}
+          <button className="font-medium" style={{ color:"#A78BFA" }} onClick={()=>{ setMode(mode==="signin"?"signup":"signin"); setError(""); setSuccess(""); }}>
+            {mode === "signin" ? "Create an account" : "Log in"}
+          </button>
+        </p>
+      </div>
+    </div>
+  );
+}
+
+const suggestionChips = [
+  { emoji: "🖼️", label: "Remove image background" },
+  { emoji: "🎨", label: "Generate AI art" },
+  { emoji: "💻", label: "Write code faster" },
+  { emoji: "🎙️", label: "Create voiceovers" },
+  { emoji: "🎵", label: "Make AI music" },
+  { emoji: "📄", label: "Summarize documents" },
+];
+
+function RynovaApp() {
+  const { session, headers, signUp, signIn, signOut } = useSupabase();
+  const [categories, setCategories] = useState([]);
+  const [tools, setTools] = useState([]);
+  const [savedIds, setSavedIds] = useState(new Set());
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
+  const [query, setQuery] = useState("");
+  const [submittedQuery, setSubmittedQuery] = useState("");
+  const [pricingTab, setPricingTab] = useState("all");
+  const [view, setView] = useState("home");
+  const [selectedTool, setSelectedTool] = useState(null);
+  const [authOpen, setAuthOpen] = useState(false);
+  const [recentIds, setRecentIds] = useState([]);
+
+  useEffect(() => {
+    window.history.replaceState({ view: "home", modal: null }, "");
+    function onPop(e) {
+      const s = e.state || { view: "home", modal: null };
+      setView(s.view || "home");
+      setSelectedTool(s.modal === "tool" ? (tools.find(t => t.id === s.toolId) || null) : null);
+      setAuthOpen(s.modal === "auth");
+    }
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, [tools]);
+
+  function goTo(nextView) {
+    window.history.pushState({ view: nextView, modal: null }, "");
+    setView(nextView);
+  }
+  function openAuth() {
+    window.history.pushState({ view, modal: "auth" }, "");
+    setAuthOpen(true);
+  }
+  function closeAuth() { window.history.back(); }
+  function closeTool() { window.history.back(); }
+
+  useEffect(() => {
+    async function load() {
+      setLoading(true); setLoadError("");
+      try {
+        const [catRes, toolRes] = await Promise.all([
+          fetch(`${REST}/categories?select=*&order=name.asc`, { headers: headers() }),
+          fetch(`${REST}/tools?select=*,categories(name,slug,icon)&status=eq.approved`, { headers: headers() }),
+        ]);
+        if (!catRes.ok || !toolRes.ok) throw new Error("Could not load data from Supabase.");
+        setCategories(await catRes.json());
+        const rawTools = await toolRes.json();
+        const deduped = Array.from(new Map(rawTools.map(t => [t.slug, t])).values());
+        setTools(deduped);
+      } catch (err) { setLoadError(err.message); }
+      finally { setLoading(false); }
+    }
+    load();
+  }, []);
+
+  useEffect(() => {
+    async function loadSaved() {
+      if (!session) return setSavedIds(new Set());
+      try {
+        const res = await fetch(`${REST}/saved_tools?select=tool_id&user_id=eq.${session.user.id}`, { headers: headers() });
+        const data = await res.json();
+        setSavedIds(new Set(data.map((d) => d.tool_id)));
+      } catch {}
+    }
+    loadSaved();
+  }, [session]);
+
+  async function toggleSave(tool) {
+    if (!session) return openAuth();
+    const isSaved = savedIds.has(tool.id);
+    const next = new Set(savedIds);
+    try {
+      if (isSaved) {
+        next.delete(tool.id); setSavedIds(next);
+        await fetch(`${REST}/saved_tools?user_id=eq.${session.user.id}&tool_id=eq.${tool.id}`, { method:"DELETE", headers: headers() });
+      } else {
+        next.add(tool.id); setSavedIds(next);
+        await fetch(`${REST}/saved_tools`, { method:"POST", headers:{...headers(), Prefer:"return=minimal"}, body: JSON.stringify({ user_id: session.user.id, tool_id: tool.id }) });
+      }
+    } catch { setSavedIds(savedIds); }
+  }
+
+  function openTool(tool) {
+    window.history.pushState({ view, modal: "tool", toolId: tool.id }, "");
+    setSelectedTool(tool);
+    setRecentIds((prev) => [tool.id, ...prev.filter((id) => id !== tool.id)].slice(0,5));
+  }
+
+  async function runSearch(q) {
+    setSubmittedQuery(q); goTo("discover");
+    if (session && q.trim()) {
+      try { await fetch(`${REST}/search_history`, { method:"POST", headers:{...headers(), Prefer:"return=minimal"}, body: JSON.stringify({ user_id: session.user.id, query: q }) }); } catch {}
+    }
+  }
+
+  const featuredTool = useMemo(() => [...tools].sort((a,b)=>b.popularity_score-a.popularity_score)[0], [tools]);
+  const categoryCounts = useMemo(() => { const m={}; tools.forEach(t=>{ const s=t.categories?.slug; if(s) m[s]=(m[s]||0)+1; }); return m; }, [tools]);
+  const trendingList = useMemo(() => { let l = tools.filter(t=>t.trending||t.popularity_score>=85); if(pricingTab!=="all") l=l.filter(t=>t.pricing_type===pricingTab); return l.sort((a,b)=>b.popularity_score-a.popularity_score); }, [tools, pricingTab]);
+  const newReleases = useMemo(() => {
+    const unique = Array.from(new Map(tools.map(t => [t.id, t])).values());
+    return unique.sort((a,b) => {
+      const diff = new Date(b.created_at) - new Date(a.created_at);
+      return diff !== 0 ? diff : a.name.localeCompare(b.name);
+    }).slice(0,5);
+  }, [tools]);
+  const recentTools = useMemo(() => recentIds.map(id=>tools.find(t=>t.id===id)).filter(Boolean), [recentIds, tools]);
+  const searchResults = useMemo(() => { if(!submittedQuery.trim()) return []; return tools.map(t=>({...t,_score:scoreTool(t,submittedQuery)})).filter(t=>t._score!==null).sort((a,b)=>b._score-a._score); }, [tools, submittedQuery]);
+
+  return (
+    <div className="min-h-screen" style={{ background:C.bg, color:C.text, fontFamily:"'Inter', sans-serif" }}>
+      <nav className="sticky top-0 z-40" style={{ background:"rgba(10,10,15,0.9)", borderBottom:`1px solid ${C.cardBorder}` }}>
+        <div className="max-w-3xl mx-auto px-5 h-16 flex items-center justify-between">
+          <button onClick={()=>goTo("home")} className="font-semibold text-lg tracking-tight" style={{ color:C.text, fontFamily:"'Space Grotesk', sans-serif" }}>Rynova</button>
+          {session ? (
+            <div className="flex items-center gap-2">
+              <button onClick={()=>goTo("dashboard")} className="text-sm font-medium px-4 py-2 rounded-full" style={{ border:`1px solid ${C.cardBorder}`, color:C.text }}>Saved</button>
+              <button onClick={signOut} className="text-sm font-medium px-4 py-2 rounded-full" style={{ border:`1px solid ${C.cardBorder}`, color:C.text }}>Log out</button>
+            </div>
+          ) : (
+            <button onClick={openAuth} className="text-sm font-medium px-4 py-2 rounded-full flex items-center gap-1.5" style={{ background:C.violet, color:"white" }}><Icon.login /> Log in</button>
+          )}
+        </div>
+      </nav>
+
+      {loadError && (
+        <div className="max-w-3xl mx-auto px-5 mt-4">
+          <div className="text-sm rounded-xl px-4 py-3 flex items-center gap-2" style={{ background:"rgba(251,113,133,0.1)", border:"1px solid rgba(251,113,133,0.3)", color:"#FB7185" }}><Icon.alert /> {loadError}</div>
+        </div>
+      )}
+
+      <div className="max-w-3xl mx-auto px-5 pb-20">
+        {view === "home" && (
+          <React.Fragment>
+            <section className="pt-8 pb-8">
+              <div className="inline-flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-full mb-5" style={{ background:C.violetSoft, color:"#C4B5FD" }}><Icon.spark /> {tools.length || "—"} AI tools indexed and growing</div>
+              <h1 className="text-3xl sm:text-4xl font-semibold leading-[1.15] tracking-tight" style={{ fontFamily:"'Space Grotesk', sans-serif" }}>
+                Find the perfect AI tool<br/>
+                <span style={{ background:"linear-gradient(90deg, #A78BFA, #60A5FA)", WebkitBackgroundClip:"text", WebkitTextFillColor:"transparent" }}>for any problem</span>
+              </h1>
+              <p className="text-sm mt-4 leading-relaxed" style={{ color:C.sub }}>Describe your problem in plain English. We'll match you with the best AI tools — ranked by relevance, rated by real users.</p>
+              <form onSubmit={(e)=>{e.preventDefault(); if(query.trim()) runSearch(query);}} className="mt-5 flex items-center gap-2 rounded-2xl p-2" style={{ background:C.card, border:`1px solid ${C.cardBorder}` }}>
+                <span className="ml-2 shrink-0" style={{ color:C.faint }}><Icon.search /></span>
+                <input value={query} onChange={(e)=>setQuery(e.target.value)} placeholder="I want an AI that edits..." className="flex-1 outline-none text-sm py-2 bg-transparent min-w-0" style={{ color:C.text }} />
+                <button type="submit" className="text-sm font-medium px-4 py-2 rounded-xl shrink-0" style={{ background:C.violet, color:"white" }}>Search</button>
+              </form>
+              <div className="flex flex-wrap gap-2 mt-3">
+                {suggestionChips.map(({emoji,label})=>(
+                  <button key={label} onClick={()=>{setQuery(label); runSearch(label);}} className="text-xs flex items-center gap-1.5 px-3 py-1.5 rounded-full" style={{ border:`1px solid ${C.cardBorder}`, color:C.sub }}>
+                    <span>{emoji}</span> {label}
+                  </button>
+                ))}
+              </div>
+            </section>
+
+            <section className="pb-8">
+              <h2 className="text-sm font-semibold mb-1" style={{ color:C.text }}>Browse Categories</h2>
+              <p className="text-xs mb-3" style={{ color:C.faint }}>{categories.length} categories covering every use case</p>
+              <div className="grid grid-cols-2 gap-2">
+                {loading ? Array.from({length:6}).map((_,i)=>(<div key={i} className="h-16 rounded-2xl animate-pulse" style={{ background:C.card }} />))
+                : categories.map(c=>(
+                  <button key={c.id} onClick={()=>{setSubmittedQuery(""); goTo("discover");}} className="rounded-2xl p-3 text-left" style={{ background:C.card, border:`1px solid ${C.cardBorder}` }}>
+                    <p className="text-sm font-medium" style={{ color:C.text }}>{c.name}</p>
+                    <p className="text-xs" style={{ color:C.faint }}>{categoryCounts[c.slug]||0} tools</p>
+                  </button>
+                ))}
+              </div>
+            </section>
+
+            {!loading && featuredTool && (
+              <section className="pb-8">
+                <h2 className="text-sm font-semibold mb-3 flex items-center gap-1.5" style={{ color:C.text }}><span style={{color:C.violet}}><Icon.spark /></span> Featured Today</h2>
+                <FeaturedCard tool={featuredTool} saved={savedIds.has(featuredTool.id)} onToggleSave={toggleSave} onOpen={openTool} />
+              </section>
+            )}
+
+            <section className="pb-8">
+              <div className="flex items-center justify-between mb-3">
+                <h2 className="text-sm font-semibold" style={{ color:C.text }}>Trending This Week</h2>
+                <span className="text-xs" style={{ color:C.faint }}>{trendingList.length} tools</span>
+              </div>
+              <div className="flex gap-2 mb-3">
+                {["all","free","freemium","paid"].map(p=>(
+                  <button key={p} onClick={()=>setPricingTab(p)} className="text-xs font-medium px-3 py-1.5 rounded-full capitalize" style={pricingTab===p?{background:C.violet,color:"white"}:{border:`1px solid ${C.cardBorder}`,color:C.sub}}>{p}</button>
+                ))}
+              </div>
+              <div className="flex flex-col gap-3">
+                {loading ? Array.from({length:3}).map((_,i)=>(<div key={i} className="h-40 rounded-2xl animate-pulse" style={{ background:C.card }} />))
+                : trendingList.map(t=>(<ToolRow key={t.id} tool={t} query="" saved={savedIds.has(t.id)} onToggleSave={toggleSave} onOpen={openTool} />))}
+              </div>
+            </section>
+
+            <section className="pb-8">
+              <div className="flex items-center justify-between mb-3">
+                <h2 className="text-sm font-semibold" style={{ color:C.text }}>New Releases</h2>
+                <Pill style={{ background:"rgba(52,211,153,0.14)", color:"#34D399" }}>Updated Today</Pill>
+              </div>
+              <div className="flex flex-col gap-3">
+                {newReleases.map(t=>(<ToolRow key={t.id} tool={t} query="" saved={savedIds.has(t.id)} onToggleSave={toggleSave} onOpen={openTool} />))}
+              </div>
+            </section>
+
+            {recentTools.length > 0 && (
+              <section>
+                <h2 className="text-sm font-semibold mb-3" style={{ color:C.text }}>Recently Viewed</h2>
+                <div className="flex flex-col gap-2">
+                  {recentTools.map(t=>(
+                    <button key={t.id} onClick={()=>openTool(t)} className="flex items-center gap-3 rounded-xl p-3 text-left w-full" style={{ background:C.card, border:`1px solid ${C.cardBorder}` }}>
+                      <Logo name={t.name} size={32} />
+                      <div className="min-w-0 flex-1">
+                        <p className="text-sm font-medium truncate" style={{ color:C.text }}>{t.name}</p>
+                        <p className="text-xs" style={{ color:C.faint }}>{t.categories?.name}</p>
+                      </div>
+                      <span className="flex items-center gap-1 text-xs" style={{ color:C.sub }}><Icon.star size={11} /> {t.rating}</span>
+                      <span style={{color:C.faint}}><Icon.chevron /></span>
+                    </button>
+                  ))}
+                </div>
+              </section>
+            )}
+          </React.Fragment>
+        )}
+
+        {view === "discover" && (
+          <section className="pt-8">
+            <div className="flex items-center gap-2 rounded-2xl p-2 mb-4" style={{ background:C.card, border:`1px solid ${C.cardBorder}` }}>
+              <span className="ml-2 shrink-0" style={{ color:C.faint }}><Icon.search /></span>
+              <input value={query} onChange={(e)=>setQuery(e.target.value)} onKeyDown={(e)=>e.key==="Enter"&&runSearch(query)} placeholder="Describe what you want to do with AI..." className="flex-1 outline-none text-sm py-2 bg-transparent min-w-0" style={{ color:C.text }} />
+              <button onClick={()=>runSearch(query)} className="text-sm font-medium px-4 py-2 rounded-xl shrink-0" style={{ background:C.violet, color:"white" }}>Search</button>
+            </div>
+            <button onClick={()=>goTo("home")} className="text-xs mb-4" style={{ color:C.faint }}>← Back to home</button>
+            {loading ? (
+              <div className="flex flex-col gap-3">{Array.from({length:4}).map((_,i)=>(<div key={i} className="h-40 rounded-2xl animate-pulse" style={{ background:C.card }} />))}</div>
+            ) : submittedQuery.trim() ? (
+              searchResults.length === 0 ? (
+                <div className="text-center py-16"><p className="font-medium mb-1" style={{ color:C.text }}>No tools match this yet.</p><p className="text-sm" style={{ color:C.faint }}>Try a different phrase.</p></div>
+              ) : (
+                <div className="flex flex-col gap-3">{searchResults.map(t=>(<ToolRow key={t.id} tool={t} query={submittedQuery} saved={savedIds.has(t.id)} onToggleSave={toggleSave} onOpen={openTool} />))}</div>
+              )
+            ) : (
+              <div className="flex flex-col gap-3">{tools.sort((a,b)=>b.popularity_score-a.popularity_score).map(t=>(<ToolRow key={t.id} tool={t} query="" saved={savedIds.has(t.id)} onToggleSave={toggleSave} onOpen={openTool} />))}</div>
+            )}
+          </section>
+        )}
+
+        {view === "dashboard" && (
+          <section className="pt-8">
+            <h1 className="text-2xl font-semibold mb-1" style={{ color:C.text, fontFamily:"'Space Grotesk', sans-serif" }}>Your saved tools</h1>
+            <p className="text-sm mb-6" style={{ color:C.faint }}>{savedIds.size} tool{savedIds.size===1?"":"s"} saved</p>
+            <button onClick={()=>goTo("home")} className="text-xs mb-4 block" style={{ color:C.faint }}>← Back to home</button>
+            {!session ? (
+              <div className="text-center py-16">
+                <p className="font-medium mb-1" style={{ color:C.text }}>Log in to see your saved tools.</p>
+                <button onClick={openAuth} className="text-sm font-medium px-4 py-2 rounded-full mt-3" style={{ background:C.violet, color:"white" }}>Log in</button>
+              </div>
+            ) : savedIds.size === 0 ? (
+              <div className="text-center py-16">
+                <p className="font-medium mb-1" style={{ color:C.text }}>No saved tools yet.</p>
+                <p className="text-sm" style={{ color:C.faint }}>Tap the bookmark icon on any tool to save it here.</p>
+              </div>
+            ) : (
+              <div className="flex flex-col gap-3">
+                {tools.filter(t => savedIds.has(t.id)).map(t => (
+                  <ToolRow key={t.id} tool={t} query="" saved={true} onToggleSave={toggleSave} onOpen={openTool} />
+                ))}
+              </div>
+            )}
+          </section>
+        )}
+      </div>
+
+      {selectedTool && <ToolDetail tool={selectedTool} onClose={closeTool} saved={savedIds.has(selectedTool.id)} onToggleSave={toggleSave} />}
+      {authOpen && <AuthModal onClose={closeAuth} onSignIn={signIn} onSignUp={signUp} />}
+
+      <footer className="py-6" style={{ borderTop:`1px solid ${C.cardBorder}` }}>
+        <div className="max-w-3xl mx-auto px-5 text-xs flex items-center justify-between" style={{ color:C.faint }}>
+          <span>Rynova AI — demo build, seed data</span>
+          <span>Live Supabase project</span>
+        </div>
+      </footer>
+    </div>
+  );
+}
+
+try {
+  ReactDOM.createRoot(document.getElementById("root")).render(<RynovaApp />);
+} catch (e) {
+  document.getElementById("root").innerHTML =
+    '<div style="padding:24px;color:#FCA5A5;font-family:monospace;font-size:13px;white-space:pre-wrap;">RENDER ERROR: ' + (e && e.message) + '</div>';
+}
+</script>
+</body>
+</html>
