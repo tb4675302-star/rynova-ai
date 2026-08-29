@@ -152,6 +152,7 @@ const Icon = {
   chevron: (p) => <svg viewBox="0 0 24 24" width={p.size||14} height={p.size||14} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><polyline points="9 18 15 12 9 6"/></svg>,
   login: (p) => <svg viewBox="0 0 24 24" width={p.size||14} height={p.size||14} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M15 3h4a2 2 0 012 2v14a2 2 0 01-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg>,
   spark: (p) => <svg viewBox="0 0 24 24" width={p.size||13} height={p.size||13} fill="currentColor"><path d="M12 2l1.9 5.6L19.5 9.5l-5.6 1.9L12 17l-1.9-5.6L4.5 9.5l5.6-1.9z"/></svg>,
+  compare: (p) => <svg viewBox="0 0 24 24" width={p.size||16} height={p.size||16} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="7" height="16" rx="1.5"/><rect x="14" y="4" width="7" height="16" rx="1.5"/></svg>,
 };
 
 function Pill({ children, style }) {
@@ -168,11 +169,11 @@ function Logo({ name, size=44 }) {
   return <div className="rounded-2xl flex items-center justify-center font-semibold shrink-0" style={{ width:size, height:size, background:"linear-gradient(135deg, #8B5CF6, #4F46E5)", color:"white", fontFamily:"'Space Grotesk', sans-serif", fontSize:size*0.4 }}>{name?.[0]}</div>;
 }
 
-function ToolRow({ tool, query, saved, onToggleSave, onOpen }) {
+function ToolRow({ tool, query, saved, onToggleSave, onOpen, comparing, onToggleCompare }) {
   const score = query ? scoreTool(tool, query) : null;
   return (
     <div className="rounded-2xl p-4 flex flex-col gap-3 cursor-pointer transition-colors"
-      style={{ background:C.card, border:`1px solid ${C.cardBorder}` }}
+      style={{ background:C.card, border: comparing ? `1px solid ${C.violet}` : `1px solid ${C.cardBorder}` }}
       onClick={() => onOpen(tool)}>
       <div className="flex items-start gap-3">
         <Logo name={tool.name} />
@@ -197,6 +198,12 @@ function ToolRow({ tool, query, saved, onToggleSave, onOpen }) {
         <a href={tool.website_url} target="_blank" rel="noopener noreferrer" onClick={(e)=>e.stopPropagation()}
           className="flex-1 text-center text-sm font-medium py-2.5 rounded-xl transition-opacity hover:opacity-90"
           style={{ background:C.violet, color:"white" }}>Open Website</a>
+        {onToggleCompare && (
+          <button onClick={(e)=>{e.stopPropagation(); onToggleCompare(tool);}}
+            className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0" style={{ border: comparing ? `1px solid ${C.violet}` : `1px solid ${C.cardBorder}`, background: comparing ? C.violetSoft : "transparent", color: comparing?C.violet:C.sub }} title="Add to compare">
+            <Icon.compare />
+          </button>
+        )}
         <button onClick={(e)=>{e.stopPropagation(); onToggleSave(tool);}}
           className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0" style={{ border:`1px solid ${C.cardBorder}`, color: saved?C.violet:C.sub }}>
           <Icon.bookmark filled={saved} />
@@ -402,6 +409,7 @@ function RynovaApp() {
   const [newCollectionName, setNewCollectionName] = useState("");
   const [pickerTool, setPickerTool] = useState(null);
   const [collectionError, setCollectionError] = useState("");
+  const [compareIds, setCompareIds] = useState([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
   const [query, setQuery] = useState("");
@@ -434,6 +442,14 @@ function RynovaApp() {
   }
   function closeAuth() { window.history.back(); }
   function closeTool() { window.history.back(); }
+
+  function toggleCompare(tool) {
+    setCompareIds((prev) => {
+      if (prev.includes(tool.id)) return prev.filter((id) => id !== tool.id);
+      if (prev.length >= 3) return prev;
+      return [...prev, tool.id];
+    });
+  }
 
   useEffect(() => {
     async function load() {
@@ -650,7 +666,7 @@ function RynovaApp() {
               </div>
               <div className="flex flex-col gap-3">
                 {loading ? Array.from({length:3}).map((_,i)=>(<div key={i} className="h-40 rounded-2xl animate-pulse" style={{ background:C.card }} />))
-                : trendingList.map(t=>(<ToolRow key={t.id} tool={t} query="" saved={savedIds.has(t.id)} onToggleSave={toggleSave} onOpen={openTool} />))}
+                : trendingList.map(t=>(<ToolRow key={t.id} tool={t} query="" saved={savedIds.has(t.id)} onToggleSave={toggleSave} onOpen={openTool} comparing={compareIds.includes(t.id)} onToggleCompare={toggleCompare} />))}
               </div>
             </section>
 
@@ -660,7 +676,7 @@ function RynovaApp() {
                 <Pill style={{ background:"rgba(52,211,153,0.14)", color:"#34D399" }}>Updated Today</Pill>
               </div>
               <div className="flex flex-col gap-3">
-                {newReleases.map(t=>(<ToolRow key={t.id} tool={t} query="" saved={savedIds.has(t.id)} onToggleSave={toggleSave} onOpen={openTool} />))}
+                {newReleases.map(t=>(<ToolRow key={t.id} tool={t} query="" saved={savedIds.has(t.id)} onToggleSave={toggleSave} onOpen={openTool} comparing={compareIds.includes(t.id)} onToggleCompare={toggleCompare} />))}
               </div>
             </section>
 
@@ -699,10 +715,10 @@ function RynovaApp() {
               searchResults.length === 0 ? (
                 <div className="text-center py-16"><p className="font-medium mb-1" style={{ color:C.text }}>No tools match this yet.</p><p className="text-sm" style={{ color:C.faint }}>Try a different phrase.</p></div>
               ) : (
-                <div className="flex flex-col gap-3">{searchResults.map(t=>(<ToolRow key={t.id} tool={t} query={submittedQuery} saved={savedIds.has(t.id)} onToggleSave={toggleSave} onOpen={openTool} />))}</div>
+                <div className="flex flex-col gap-3">{searchResults.map(t=>(<ToolRow key={t.id} tool={t} query={submittedQuery} saved={savedIds.has(t.id)} onToggleSave={toggleSave} onOpen={openTool} comparing={compareIds.includes(t.id)} onToggleCompare={toggleCompare} />))}</div>
               )
             ) : (
-              <div className="flex flex-col gap-3">{tools.sort((a,b)=>b.popularity_score-a.popularity_score).map(t=>(<ToolRow key={t.id} tool={t} query="" saved={savedIds.has(t.id)} onToggleSave={toggleSave} onOpen={openTool} />))}</div>
+              <div className="flex flex-col gap-3">{tools.sort((a,b)=>b.popularity_score-a.popularity_score).map(t=>(<ToolRow key={t.id} tool={t} query="" saved={savedIds.has(t.id)} onToggleSave={toggleSave} onOpen={openTool} comparing={compareIds.includes(t.id)} onToggleCompare={toggleCompare} />))}</div>
             )}
           </section>
         )}
@@ -732,7 +748,7 @@ function RynovaApp() {
                   ) : (
                     <div className="flex flex-col gap-3">
                       {tools.filter(t => savedIds.has(t.id)).map(t => (
-                        <ToolRow key={t.id} tool={t} query="" saved={true} onToggleSave={toggleSave} onOpen={openTool} />
+                        <ToolRow key={t.id} tool={t} query="" saved={true} onToggleSave={toggleSave} onOpen={openTool} comparing={compareIds.includes(t.id)} onToggleCompare={toggleCompare} />
                       ))}
                     </div>
                   )
@@ -784,7 +800,7 @@ function RynovaApp() {
                           ) : (
                             <div className="flex flex-col gap-3">
                               {colTools.map(t => (
-                                <ToolRow key={t.id} tool={t} query="" saved={savedIds.has(t.id)} onToggleSave={toggleSave} onOpen={openTool} />
+                                <ToolRow key={t.id} tool={t} query="" saved={savedIds.has(t.id)} onToggleSave={toggleSave} onOpen={openTool} comparing={compareIds.includes(t.id)} onToggleCompare={toggleCompare} />
                               ))}
                             </div>
                           )}
@@ -797,7 +813,73 @@ function RynovaApp() {
             )}
           </section>
         )}
+
+        {view === "compare" && (
+          <section className="pt-8">
+            <button onClick={()=>goTo("home")} className="text-xs mb-4 block" style={{ color:C.faint }}>← Back to home</button>
+            <h1 className="text-2xl font-semibold mb-1" style={{ color:C.text, fontFamily:"'Space Grotesk', sans-serif" }}>Compare tools</h1>
+            <p className="text-sm mb-6" style={{ color:C.faint }}>{compareIds.length} of 3 selected</p>
+            {(() => {
+              const compareTools = compareIds.map(id => tools.find(t => t.id === id)).filter(Boolean);
+              if (compareTools.length === 0) {
+                return (
+                  <div className="text-center py-16">
+                    <p className="font-medium mb-1" style={{ color:C.text }}>No tools selected yet.</p>
+                    <p className="text-sm" style={{ color:C.faint }}>Tap the compare icon on any tool to add it here.</p>
+                  </div>
+                );
+              }
+              const rows = [
+                { label: "Pricing", render: (t) => <PricingPill type={t.pricing_type} /> },
+                { label: "Price details", render: (t) => <span style={{color:C.sub}}>{t.pricing_details}</span> },
+                { label: "Free plan", render: (t) => <span style={{color: t.has_free_plan ? "#34D399" : "#FB7185"}}>{t.has_free_plan ? "Yes" : "No"}</span> },
+                { label: "Rating", render: (t) => <span className="flex items-center gap-1" style={{color:C.text}}><Icon.star size={12} /> {t.rating} <span style={{color:C.faint}}>({(t.review_count||0).toLocaleString()})</span></span> },
+                { label: "Skill level", render: (t) => <span style={{color:C.sub, textTransform:"capitalize"}}>{t.skill_level}</span> },
+                { label: "Platforms", render: (t) => <span style={{color:C.sub}}>{(t.platforms||[]).join(", ")}</span> },
+                { label: "Key features", render: (t) => <ul>{(t.features||[]).slice(0,4).map((f,i)=>(<li key={i} className="text-xs mb-1" style={{color:C.sub}}>• {f}</li>))}</ul> },
+                { label: "Strengths", render: (t) => <ul>{(t.pros||[]).map((p,i)=>(<li key={i} className="text-xs mb-1" style={{color:"#34D399"}}>+ {p}</li>))}</ul> },
+                { label: "Limitations", render: (t) => <ul>{(t.cons||[]).map((c,i)=>(<li key={i} className="text-xs mb-1" style={{color:"#FB7185"}}>− {c}</li>))}</ul> },
+                { label: "Best for", render: (t) => <span style={{color:C.sub}}>{t.best_for}</span> },
+              ];
+              return (
+                <div className="overflow-x-auto -mx-5 px-5">
+                  <div style={{ minWidth: compareTools.length * 200 }}>
+                    <div className="flex gap-3 mb-3">
+                      {compareTools.map((t) => (
+                        <div key={t.id} className="flex-1 min-w-[180px] rounded-2xl p-3 flex items-center gap-2" style={{ background:C.card, border:`1px solid ${C.cardBorder}` }}>
+                          <Logo name={t.name} size={32} />
+                          <div className="min-w-0 flex-1">
+                            <p className="text-sm font-semibold truncate" style={{ color:C.text }}>{t.name}</p>
+                          </div>
+                          <button onClick={()=>toggleCompare(t)} style={{color:C.faint}}><Icon.x size={14} /></button>
+                        </div>
+                      ))}
+                    </div>
+                    {rows.map((row, i) => (
+                      <div key={i} className="flex gap-3 mb-3">
+                        {compareTools.map((t) => (
+                          <div key={t.id} className="flex-1 min-w-[180px] rounded-xl p-3" style={{ background:C.card, border:`1px solid ${C.cardBorder}` }}>
+                            <p className="text-[10px] font-semibold uppercase tracking-wide mb-1.5" style={{ color:C.faint }}>{row.label}</p>
+                            {row.render(t)}
+                          </div>
+                        ))}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })()}
+          </section>
+        )}
       </div>
+
+      {compareIds.length > 0 && view !== "compare" && (
+        <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-40 flex items-center gap-3 rounded-full px-4 py-3 shadow-lg" style={{ background:C.card, border:`1px solid ${C.violet}` }}>
+          <span className="text-xs font-medium" style={{ color:C.text }}>{compareIds.length} tool{compareIds.length===1?"":"s"} selected</span>
+          <button onClick={()=>goTo("compare")} className="text-xs font-semibold px-3 py-1.5 rounded-full" style={{ background:C.violet, color:"white" }}>Compare</button>
+          <button onClick={()=>setCompareIds([])} style={{ color:C.faint }}><Icon.x size={14} /></button>
+        </div>
+      )}
 
       {selectedTool && <ToolDetail tool={selectedTool} onClose={closeTool} saved={savedIds.has(selectedTool.id)} onToggleSave={toggleSave} onOpenCollections={(t)=>{ if(!session) return openAuth(); setPickerTool(t); }} />}
       {authOpen && <AuthModal onClose={closeAuth} onSignIn={signIn} onSignUp={signUp} />}
