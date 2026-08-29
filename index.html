@@ -373,7 +373,7 @@ function CollectionPicker({ tool, collections, onToggle, onCreate, onClose, erro
           })}
         </div>
         <div className="flex items-center gap-2">
-          <input value={name} onChange={(e)=>setName(e.target.value)} placeholder="New collection name" className="flex-1 rounded-xl px-3 py-2.5 text-sm outline-none" style={{ background:"#0F0F16", border:`1px solid ${C.cardBorder}`, color:C.text }} />
+          <input value={name} onChange={(e)=>setName(e.target.value)} placeholder="New collection name" className="flex-1 min-w-0 rounded-xl px-3 py-2.5 text-sm outline-none" style={{ background:"#0F0F16", border:`1px solid ${C.cardBorder}`, color:C.text }} />
           <button onClick={()=>{ if(name.trim()){ onCreate(name); setName(""); } }} className="text-sm font-medium px-4 py-2.5 rounded-xl shrink-0" style={{ background:C.violet, color:"white" }}>Create</button>
         </div>
         {error && <p className="text-xs mt-2 flex items-center gap-1.5" style={{ color:"#FB7185" }}><Icon.alert /> {error}</p>}
@@ -741,7 +741,7 @@ function RynovaApp() {
                 {dashboardTab === "collections" && !openCollectionId && (
                   <React.Fragment>
                     <div className="flex items-center gap-2 mb-2">
-                      <input value={newCollectionName} onChange={(e)=>setNewCollectionName(e.target.value)} placeholder="New collection name (e.g. Content Creator Stack)" className="flex-1 rounded-xl px-3 py-2.5 text-sm outline-none" style={{ background:C.card, border:`1px solid ${C.cardBorder}`, color:C.text }} />
+                      <input value={newCollectionName} onChange={(e)=>setNewCollectionName(e.target.value)} placeholder="New collection name (e.g. Content Creator Stack)" className="flex-1 min-w-0 rounded-xl px-3 py-2.5 text-sm outline-none" style={{ background:C.card, border:`1px solid ${C.cardBorder}`, color:C.text }} />
                       <button onClick={()=>createCollection(newCollectionName)} className="text-sm font-medium px-4 py-2.5 rounded-xl shrink-0" style={{ background:C.violet, color:"white" }}>Create</button>
                     </div>
                     {collectionError && <p className="text-xs mb-3 flex items-center gap-1.5" style={{ color:"#FB7185" }}><Icon.alert /> {collectionError}</p>}
