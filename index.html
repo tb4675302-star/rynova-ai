@@ -25,6 +25,7 @@
 <style>
   body { margin:0; background:#0A0A0F; }
   ::placeholder { color:#6C6C7E; }
+  @keyframes fadeSlideIn { from { opacity:0; transform:translateY(14px) scale(0.98); } to { opacity:1; transform:translateY(0) scale(1); } }
 </style>
 </head>
 <body>
@@ -146,7 +147,7 @@ const Icon = {
   search: (p) => <svg viewBox="0 0 24 24" width={p.size||16} height={p.size||16} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>,
   bookmark: (p) => <svg viewBox="0 0 24 24" width={p.size||16} height={p.size||16} fill={p.filled?"currentColor":"none"} stroke="currentColor" strokeWidth="2"><path d="M19 21l-7-5-7 5V5a2 2 0 012-2h10a2 2 0 012 2z"/></svg>,
   x: (p) => <svg viewBox="0 0 24 24" width={p.size||16} height={p.size||16} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>,
-  star: (p) => <svg viewBox="0 0 24 24" width={p.size||12} height={p.size||12} fill="#FBBF24" stroke="#FBBF24"><polygon points="12 2 15 9 22 9.5 17 14.5 18.5 22 12 18 5.5 22 7 14.5 2 9.5 9 9"/></svg>,
+  star: (p) => <svg viewBox="0 0 24 24" width={p.size||12} height={p.size||12} fill={p.filled===false?"none":"#FBBF24"} stroke="#FBBF24"><polygon points="12 2 15 9 22 9.5 17 14.5 18.5 22 12 18 5.5 22 7 14.5 2 9.5 9 9"/></svg>,
   check: (p) => <svg viewBox="0 0 24 24" width={p.size||14} height={p.size||14} fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><polyline points="20 6 9 17 4 12"/></svg>,
   alert: (p) => <svg viewBox="0 0 24 24" width={p.size||14} height={p.size||14} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>,
   chevron: (p) => <svg viewBox="0 0 24 24" width={p.size||14} height={p.size||14} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><polyline points="9 18 15 12 9 6"/></svg>,
@@ -248,8 +249,92 @@ function FeaturedCard({ tool, saved, onToggleSave, onOpen }) {
   );
 }
 
-function ToolDetail({ tool, onClose, saved, onToggleSave, onOpenCollections }) {
+function StarPicker({ value, onChange }) {
+  return (
+    <div className="flex items-center gap-1">
+      {[1,2,3,4,5].map((n) => (
+        <button key={n} type="button" onClick={()=>onChange(n)} className="p-0.5">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill={n<=value?"#FBBF24":"none"} stroke="#FBBF24" strokeWidth="1.5"><polygon points="12 2 15 9 22 9.5 17 14.5 18.5 22 12 18 5.5 22 7 14.5 2 9.5 9 9"/></svg>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function timeAgo(dateStr) {
+  const diff = Date.now() - new Date(dateStr).getTime();
+  const days = Math.floor(diff / 86400000);
+  if (days <= 0) return "today";
+  if (days === 1) return "1 day ago";
+  if (days < 30) return `${days} days ago`;
+  const months = Math.floor(days / 30);
+  if (months < 12) return `${months} month${months===1?"":"s"} ago`;
+  return `${Math.floor(months/12)} year${Math.floor(months/12)===1?"":"s"} ago`;
+}
+
+function ToolDetail({ tool, onClose, saved, onToggleSave, onOpenCollections, session, headers }) {
+  const [reviews, setReviews] = useState([]);
+  const [reviewsLoading, setReviewsLoading] = useState(true);
+  const [myRating, setMyRating] = useState(0);
+  const [myBody, setMyBody] = useState("");
+  const [reviewError, setReviewError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [helpfulClicked, setHelpfulClicked] = useState(new Set());
+
+  useEffect(() => {
+    if (!tool) return;
+    async function load() {
+      setReviewsLoading(true);
+      try {
+        const res = await fetch(`${REST}/reviews?select=*&tool_id=eq.${tool.id}&order=created_at.desc`, { headers: headers() });
+        const data = await res.json();
+        setReviews(data);
+        if (session) {
+          const mine = data.find((r) => r.user_id === session.user.id);
+          if (mine) { setMyRating(mine.rating); setMyBody(mine.body || ""); }
+          else { setMyRating(0); setMyBody(""); }
+        }
+      } catch {} finally { setReviewsLoading(false); }
+    }
+    load();
+  }, [tool?.id]);
+
+  async function submitReview() {
+    if (!session) return;
+    if (myRating < 1) { setReviewError("Pick a star rating first."); return; }
+    setSubmitting(true); setReviewError("");
+    try {
+      const res = await fetch(`${REST}/reviews?on_conflict=user_id,tool_id`, {
+        method: "POST",
+        headers: { ...headers(), Prefer: "resolution=merge-duplicates,return=representation" },
+        body: JSON.stringify({ user_id: session.user.id, tool_id: tool.id, rating: myRating, body: myBody.trim() || null }),
+      });
+      const data = await res.json();
+      if (!res.ok) { setReviewError(data?.message || "Could not save review."); return; }
+      setReviews((prev) => {
+        const others = prev.filter((r) => r.user_id !== session.user.id);
+        return [data[0], ...others];
+      });
+    } catch (err) {
+      setReviewError(err.message || "Network error.");
+    } finally { setSubmitting(false); }
+  }
+
+  async function markHelpful(review) {
+    if (helpfulClicked.has(review.id)) return;
+    setHelpfulClicked((prev) => new Set(prev).add(review.id));
+    setReviews((prev) => prev.map((r) => r.id===review.id ? { ...r, helpful_count:(r.helpful_count||0)+1 } : r));
+    try {
+      await fetch(`${REST}/reviews?id=eq.${review.id}`, {
+        method: "PATCH",
+        headers: headers(),
+        body: JSON.stringify({ helpful_count: (review.helpful_count||0)+1 }),
+      });
+    } catch {}
+  }
+
   if (!tool) return null;
+  const avgRating = reviews.length ? (reviews.reduce((a,r)=>a+r.rating,0)/reviews.length).toFixed(1) : tool.rating;
   return (
     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60" onClick={onClose} style={{backdropFilter:"blur(4px)"}}>
       <div className="w-full sm:max-w-2xl sm:rounded-3xl rounded-t-3xl max-h-[90vh] overflow-y-auto" style={{ background:C.card, border:`1px solid ${C.cardBorder}` }} onClick={(e)=>e.stopPropagation()}>
@@ -294,6 +379,51 @@ function ToolDetail({ tool, onClose, saved, onToggleSave, onOpenCollections }) {
               <ul className="space-y-1.5">{(tool.cons||[]).map((c,i)=>(<li key={i} className="text-sm" style={{ color:"#FB7185" }}>− {c}</li>))}</ul>
             </div>
           </div>
+
+          <div style={{ borderTop:`1px solid ${C.cardBorder}`, paddingTop:20 }}>
+            <div className="flex items-center justify-between mb-4">
+              <h4 className="text-sm font-semibold" style={{ color:C.text }}>Reviews</h4>
+              <span className="text-xs" style={{ color:C.faint }}>{reviews.length} review{reviews.length===1?"":"s"} · avg {avgRating}★</span>
+            </div>
+
+            {session ? (
+              <div className="rounded-2xl p-4 mb-4" style={{ background:"#0F0F16", border:`1px solid ${C.cardBorder}` }}>
+                <p className="text-xs mb-2" style={{ color:C.faint }}>Your rating</p>
+                <StarPicker value={myRating} onChange={setMyRating} />
+                <textarea value={myBody} onChange={(e)=>setMyBody(e.target.value)} placeholder="Share your experience with this tool (optional)" rows={3} className="w-full mt-3 rounded-xl px-3 py-2.5 text-sm outline-none resize-none" style={{ background:C.card, border:`1px solid ${C.cardBorder}`, color:C.text }} />
+                {reviewError && <p className="text-xs mt-2 flex items-center gap-1.5" style={{ color:"#FB7185" }}><Icon.alert /> {reviewError}</p>}
+                <button onClick={submitReview} disabled={submitting} className="text-sm font-medium px-4 py-2 rounded-xl mt-3 disabled:opacity-60" style={{ background:C.violet, color:"white" }}>
+                  {submitting ? "Saving..." : "Submit review"}
+                </button>
+              </div>
+            ) : (
+              <p className="text-xs mb-4" style={{ color:C.faint }}>Log in to leave a review.</p>
+            )}
+
+            {reviewsLoading ? (
+              <div className="flex flex-col gap-2">{Array.from({length:2}).map((_,i)=>(<div key={i} className="h-16 rounded-xl animate-pulse" style={{ background:"#0F0F16" }} />))}</div>
+            ) : reviews.length === 0 ? (
+              <p className="text-xs" style={{ color:C.faint }}>No reviews yet — be the first to share your experience.</p>
+            ) : (
+              <div className="flex flex-col gap-3">
+                {reviews.map((r) => (
+                  <div key={r.id} className="rounded-xl p-3" style={{ background:"#0F0F16", border:`1px solid ${C.cardBorder}` }}>
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="flex items-center gap-1 text-sm" style={{ color:C.text }}>
+                        {Array.from({length:5}).map((_,i)=>(<Icon.star key={i} size={12} filled={i<r.rating} />))}
+                      </span>
+                      <span className="text-xs" style={{ color:C.faint }}>{timeAgo(r.created_at)}</span>
+                    </div>
+                    {r.body && <p className="text-sm mb-2" style={{ color:C.sub }}>{r.body}</p>}
+                    <button onClick={()=>markHelpful(r)} disabled={helpfulClicked.has(r.id)} className="text-xs" style={{ color: helpfulClicked.has(r.id) ? C.violet : C.faint }}>
+                      👍 Helpful ({r.helpful_count||0})
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
           <div className="flex items-center gap-3 pt-2">
             <a href={tool.website_url} target="_blank" rel="noopener noreferrer" className="flex-1 text-center text-sm font-medium py-3 rounded-xl" style={{ background:C.violet, color:"white" }}>Visit official website</a>
             <button onClick={()=>onOpenCollections(tool)} className="px-4 py-3 rounded-xl text-sm font-medium" style={{ border:`1px solid ${C.cardBorder}`, color:C.text }}>+ Collection</button>
@@ -357,6 +487,65 @@ function AuthModal({ onClose, onSignIn, onSignUp }) {
   );
 }
 
+function IntroSequence({ tools, onDone }) {
+  const [i, setI] = useState(0);
+  const ready = tools.length >= 3;
+  const toolFrames = ready ? tools.slice(0, 5) : [];
+  const totalFrames = 1 + toolFrames.length + 1; // brand + tools + CTA
+
+  useEffect(() => {
+    if (!ready && i === 0) return; // hold on brand frame until data arrives
+    const duration = i === 0 ? 1100 : 1500;
+    const t = setTimeout(() => {
+      if (i + 1 >= totalFrames) onDone();
+      else setI(i + 1);
+    }, duration);
+    return () => clearTimeout(t);
+  }, [i, ready, totalFrames]);
+
+  const isBrand = i === 0;
+  const isCTA = i === totalFrames - 1 && i > 0;
+  const tool = !isBrand && !isCTA ? toolFrames[i - 1] : null;
+
+  return (
+    <div className="fixed inset-0 z-[100] flex flex-col items-center justify-center px-8" style={{ background: C.bg }}>
+      <button onClick={onDone} className="absolute top-6 right-6 text-xs font-medium px-3 py-1.5 rounded-full" style={{ border:`1px solid ${C.cardBorder}`, color:C.sub }}>Skip</button>
+
+      <div key={i} style={{ animation: "fadeSlideIn 0.5s ease-out" }} className="flex flex-col items-center text-center max-w-xs">
+        {isBrand && (
+          <React.Fragment>
+            <div className="rounded-3xl flex items-center justify-center mb-5" style={{ width:72, height:72, background:"linear-gradient(135deg, #8B5CF6, #4F46E5)" }}>
+              <span className="font-semibold text-3xl text-white" style={{ fontFamily:"'Space Grotesk', sans-serif" }}>R</span>
+            </div>
+            <h1 className="text-2xl font-semibold mb-2" style={{ color:C.text, fontFamily:"'Space Grotesk', sans-serif" }}>Rynova</h1>
+            <p className="text-sm" style={{ color:C.sub }}>Finding the right AI for anything...</p>
+          </React.Fragment>
+        )}
+        {tool && (
+          <React.Fragment>
+            <Logo name={tool.name} size={72} />
+            <h2 className="text-xl font-semibold mt-5 mb-1.5" style={{ color:C.text, fontFamily:"'Space Grotesk', sans-serif" }}>{tool.name}</h2>
+            <p className="text-sm" style={{ color:C.sub }}>{tool.short_description}</p>
+          </React.Fragment>
+        )}
+        {isCTA && (
+          <React.Fragment>
+            <div className="inline-flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-full mb-5" style={{ background:C.violetSoft, color:"#C4B5FD" }}><Icon.spark /> {tools.length}+ AI tools indexed</div>
+            <h2 className="text-2xl font-semibold mb-2" style={{ color:C.text, fontFamily:"'Space Grotesk', sans-serif" }}>Let's find yours</h2>
+            <button onClick={onDone} className="text-sm font-medium px-5 py-2.5 rounded-full mt-2" style={{ background:C.violet, color:"white" }}>Get started →</button>
+          </React.Fragment>
+        )}
+      </div>
+
+      <div className="absolute bottom-10 flex items-center gap-1.5">
+        {Array.from({ length: totalFrames }).map((_, idx) => (
+          <span key={idx} className="rounded-full transition-all" style={{ width: idx===i?18:6, height:6, background: idx===i ? C.violet : C.cardBorder }} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function CollectionPicker({ tool, collections, onToggle, onCreate, onClose, error }) {
   const [name, setName] = useState("");
   return (
@@ -410,6 +599,7 @@ function RynovaApp() {
   const [pickerTool, setPickerTool] = useState(null);
   const [collectionError, setCollectionError] = useState("");
   const [compareIds, setCompareIds] = useState([]);
+  const [showIntro, setShowIntro] = useState(true);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
   const [query, setQuery] = useState("");
@@ -588,6 +778,8 @@ function RynovaApp() {
   const searchResults = useMemo(() => { if(!submittedQuery.trim()) return []; return tools.map(t=>({...t,_score:scoreTool(t,submittedQuery)})).filter(t=>t._score!==null).sort((a,b)=>b._score-a._score); }, [tools, submittedQuery]);
 
   return (
+    <React.Fragment>
+      {showIntro && <IntroSequence tools={tools} onDone={() => setShowIntro(false)} />}
     <div className="min-h-screen" style={{ background:C.bg, color:C.text, fontFamily:"'Inter', sans-serif" }}>
       <nav className="sticky top-0 z-40" style={{ background:"rgba(10,10,15,0.9)", borderBottom:`1px solid ${C.cardBorder}` }}>
         <div className="max-w-3xl mx-auto px-5 h-16 flex items-center justify-between">
@@ -881,7 +1073,7 @@ function RynovaApp() {
         </div>
       )}
 
-      {selectedTool && <ToolDetail tool={selectedTool} onClose={closeTool} saved={savedIds.has(selectedTool.id)} onToggleSave={toggleSave} onOpenCollections={(t)=>{ if(!session) return openAuth(); setPickerTool(t); }} />}
+      {selectedTool && <ToolDetail tool={selectedTool} onClose={closeTool} saved={savedIds.has(selectedTool.id)} onToggleSave={toggleSave} onOpenCollections={(t)=>{ if(!session) return openAuth(); setPickerTool(t); }} session={session} headers={headers} />}
       {authOpen && <AuthModal onClose={closeAuth} onSignIn={signIn} onSignUp={signUp} />}
       {pickerTool && <CollectionPicker tool={pickerTool} collections={collections} onToggle={toggleInCollection} onCreate={(name)=>createCollection(name)} onClose={()=>{setPickerTool(null); setCollectionError("");}} error={collectionError} />}
 
@@ -892,6 +1084,7 @@ function RynovaApp() {
         </div>
       </footer>
     </div>
+    </React.Fragment>
   );
 }
 
