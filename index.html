@@ -644,6 +644,78 @@ function CollectionPicker({ tool, collections, onToggle, onCreate, onClose, erro
   );
 }
 
+const workflowTemplates = [
+  {
+    id: "youtube-video",
+    emoji: "🎬",
+    title: "Create a YouTube Video",
+    description: "From script to short clips, using AI at every step.",
+    steps: [
+      { title: "Write the script", description: "Draft your video script and outline.", toolSlug: "chatgpt" },
+      { title: "Record the voiceover", description: "Turn your script into a natural-sounding voice.", toolSlug: "elevenlabs" },
+      { title: "Edit the video", description: "Assemble footage, add motion and effects.", toolSlug: "runway" },
+      { title: "Cut short clips", description: "Repurpose the video into short clips for social.", toolSlug: "opus-clip" },
+    ],
+  },
+  {
+    id: "launch-business",
+    emoji: "🚀",
+    title: "Launch a Business",
+    description: "Plan, brand, and automate your new venture.",
+    steps: [
+      { title: "Write your business plan", description: "Draft a plan, pitch, and messaging.", toolSlug: "chatgpt" },
+      { title: "Design your logo", description: "Generate visual concepts for your brand.", toolSlug: "midjourney" },
+      { title: "Automate your workflows", description: "Connect your tools and automate busywork.", toolSlug: "zapier" },
+      { title: "Organize everything", description: "Keep plans, notes, and docs in one place.", toolSlug: "notion-ai" },
+    ],
+  },
+  {
+    id: "grow-instagram",
+    emoji: "📸",
+    title: "Grow on Instagram",
+    description: "Turn one idea into a week of content.",
+    steps: [
+      { title: "Brainstorm content ideas", description: "Generate a week's worth of post ideas.", toolSlug: "chatgpt" },
+      { title: "Create visuals", description: "Generate eye-catching images for your posts.", toolSlug: "dalle-3" },
+      { title: "Make reels", description: "Cut short, scroll-stopping video clips.", toolSlug: "opus-clip" },
+      { title: "Add voiceover", description: "Give your reels a polished narration.", toolSlug: "elevenlabs" },
+    ],
+  },
+  {
+    id: "study-exam",
+    emoji: "📚",
+    title: "Study for an Exam",
+    description: "Summarize, quiz yourself, and stay organized.",
+    steps: [
+      { title: "Summarize your notes", description: "Turn long notes into clear summaries.", toolSlug: "notion-ai" },
+      { title: "Practice with questions", description: "Generate practice questions on any topic.", toolSlug: "chatgpt" },
+      { title: "Make audio revision notes", description: "Turn summaries into audio you can listen to.", toolSlug: "elevenlabs" },
+    ],
+  },
+  {
+    id: "automate-work",
+    emoji: "⚙️",
+    title: "Automate Repetitive Work",
+    description: "Map it, document it, then let it run itself.",
+    steps: [
+      { title: "Map the workflow", description: "Sketch out the steps you repeat often.", toolSlug: "chatgpt" },
+      { title: "Automate the busywork", description: "Connect your apps and remove manual steps.", toolSlug: "zapier" },
+      { title: "Document the process", description: "Write it down so anyone can follow it.", toolSlug: "notion-ai" },
+    ],
+  },
+  {
+    id: "code-faster",
+    emoji: "💻",
+    title: "Build Software Faster",
+    description: "Ship code with an AI pair programmer.",
+    steps: [
+      { title: "Plan the feature", description: "Think through the approach before coding.", toolSlug: "chatgpt" },
+      { title: "Write the code", description: "Get inline suggestions as you build.", toolSlug: "github-copilot" },
+      { title: "Keep notes organized", description: "Track decisions and technical docs.", toolSlug: "notion-ai" },
+    ],
+  },
+];
+
 const suggestionChips = [
   { emoji: "🖼️", label: "Remove image background" },
   { emoji: "🎨", label: "Generate AI art" },
@@ -667,6 +739,7 @@ function RynovaApp() {
   const [compareIds, setCompareIds] = useState([]);
   const [showIntro, setShowIntro] = useState(true);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [selectedWorkflowId, setSelectedWorkflowId] = useState(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
   const [query, setQuery] = useState("");
@@ -938,6 +1011,21 @@ function RynovaApp() {
               </div>
             </section>
 
+            <section className="pb-8">
+              <h2 className="text-sm font-semibold mb-1" style={{ color:C.text }}>Workflow Templates</h2>
+              <p className="text-xs mb-3" style={{ color:C.faint }}>Step-by-step tool stacks for common goals</p>
+              <div className="flex gap-3 overflow-x-auto -mx-5 px-5" style={{ scrollSnapType:"x mandatory" }}>
+                {workflowTemplates.map((wf) => (
+                  <button key={wf.id} onClick={()=>{ setSelectedWorkflowId(wf.id); goTo("workflow"); }} className="shrink-0 text-left rounded-2xl p-4" style={{ width:180, background:C.card, border:`1px solid ${C.cardBorder}`, scrollSnapAlign:"start" }}>
+                    <span className="text-2xl">{wf.emoji}</span>
+                    <p className="text-sm font-semibold mt-2 mb-1" style={{ color:C.text, fontFamily:"'Space Grotesk', sans-serif" }}>{wf.title}</p>
+                    <p className="text-xs leading-snug" style={{ color:C.faint }}>{wf.description}</p>
+                    <p className="text-[10px] mt-2 font-medium" style={{ color:"#A78BFA" }}>{wf.steps.length} steps →</p>
+                  </button>
+                ))}
+              </div>
+            </section>
+
             {!loading && featuredTool && (
               <section className="pb-8">
                 <h2 className="text-sm font-semibold mb-3 flex items-center gap-1.5" style={{ color:C.text }}><span style={{color:C.violet}}><Icon.spark /></span> Featured Today</h2>
@@ -1104,6 +1192,53 @@ function RynovaApp() {
             )}
           </section>
         )}
+
+        {view === "workflow" && (() => {
+          const wf = workflowTemplates.find(w => w.id === selectedWorkflowId);
+          if (!wf) return (
+            <section className="pt-8">
+              <button onClick={()=>goTo("home")} className="text-xs mb-4 block" style={{ color:C.faint }}>← Back to home</button>
+              <p className="text-sm" style={{ color:C.faint }}>Workflow not found.</p>
+            </section>
+          );
+          return (
+            <section className="pt-8">
+              <button onClick={()=>goTo("home")} className="text-xs mb-4 block" style={{ color:C.faint }}>← Back to home</button>
+              <span className="text-4xl">{wf.emoji}</span>
+              <h1 className="text-2xl font-semibold mt-3 mb-1" style={{ color:C.text, fontFamily:"'Space Grotesk', sans-serif" }}>{wf.title}</h1>
+              <p className="text-sm mb-6" style={{ color:C.faint }}>{wf.description}</p>
+              <div className="flex flex-col">
+                {wf.steps.map((step, idx) => {
+                  const stepTool = tools.find(t => t.slug === step.toolSlug);
+                  return (
+                    <div key={idx} className="flex gap-3">
+                      <div className="flex flex-col items-center">
+                        <div className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-semibold shrink-0" style={{ background:C.violet, color:"white" }}>{idx+1}</div>
+                        {idx < wf.steps.length - 1 && <div className="w-px flex-1 my-1" style={{ background:C.cardBorder, minHeight:24 }} />}
+                      </div>
+                      <div className="pb-6 flex-1 min-w-0">
+                        <p className="text-sm font-semibold" style={{ color:C.text }}>{step.title}</p>
+                        <p className="text-xs mb-3" style={{ color:C.faint }}>{step.description}</p>
+                        {stepTool ? (
+                          <div className="rounded-xl p-3 flex items-center gap-3" style={{ background:C.card, border:`1px solid ${C.cardBorder}` }}>
+                            <Logo name={stepTool.name} size={36} />
+                            <div className="min-w-0 flex-1">
+                              <p className="text-sm font-medium truncate" style={{ color:C.text }}>{stepTool.name}</p>
+                              <p className="text-xs" style={{ color:C.faint }}>{stepTool.categories?.name}</p>
+                            </div>
+                            <button onClick={()=>openTool(stepTool)} className="text-xs font-medium px-3 py-1.5 rounded-full shrink-0" style={{ background:C.violet, color:"white" }}>View</button>
+                          </div>
+                        ) : (
+                          <p className="text-xs" style={{ color:C.faint }}>Recommended tool loading…</p>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </section>
+          );
+        })()}
 
         {view === "compare" && (
           <section className="pt-8">
