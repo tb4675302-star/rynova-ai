@@ -612,6 +612,20 @@ function IntroSequence({ tools, onDone }) {
   );
 }
 
+function CollectionNoteField({ initialNote, onSave }) {
+  const [note, setNote] = useState(initialNote);
+  return (
+    <input
+      value={note}
+      onChange={(e)=>setNote(e.target.value)}
+      onBlur={()=>{ if (note !== initialNote) onSave(note); }}
+      placeholder="Why did you add this? (optional note)"
+      className="text-xs rounded-lg px-3 py-2 outline-none -mt-1"
+      style={{ background:"transparent", border:`1px dashed ${C.cardBorder}`, color:C.sub }}
+    />
+  );
+}
+
 function CollectionPicker({ tool, collections, onToggle, onCreate, onClose, error }) {
   const [name, setName] = useState("");
   return (
@@ -816,7 +830,7 @@ function RynovaApp() {
   async function loadCollections() {
     if (!session) return setCollections([]);
     try {
-      const res = await fetch(`${REST}/collections?select=*,collection_tools(tool_id)&user_id=eq.${session.user.id}&order=created_at.asc`, { headers: headers() });
+      const res = await fetch(`${REST}/collections?select=*,collection_tools(tool_id,note)&user_id=eq.${session.user.id}&order=created_at.asc`, { headers: headers() });
       const data = await res.json();
       setCollections(data);
     } catch {}
@@ -848,6 +862,20 @@ function RynovaApp() {
     if (openCollectionId === id) setOpenCollectionId(null);
     try {
       await fetch(`${REST}/collections?id=eq.${id}`, { method: "DELETE", headers: headers() });
+    } catch {}
+  }
+
+  async function updateCollectionNote(collectionId, toolId, note) {
+    setCollections((prev) => prev.map((c) => {
+      if (c.id !== collectionId) return c;
+      return { ...c, collection_tools: c.collection_tools.map((ct) => ct.tool_id === toolId ? { ...ct, note } : ct) };
+    }));
+    try {
+      await fetch(`${REST}/collection_tools?collection_id=eq.${collectionId}&tool_id=eq.${toolId}`, {
+        method: "PATCH",
+        headers: headers(),
+        body: JSON.stringify({ note }),
+      });
     } catch {}
   }
 
@@ -1178,9 +1206,15 @@ function RynovaApp() {
                             </div>
                           ) : (
                             <div className="flex flex-col gap-3">
-                              {colTools.map(t => (
-                                <ToolRow key={t.id} tool={t} query="" saved={savedIds.has(t.id)} onToggleSave={toggleSave} onOpen={openTool} comparing={compareIds.includes(t.id)} onToggleCompare={toggleCompare} />
-                              ))}
+                              {colTools.map(t => {
+                                const ct = (col?.collection_tools||[]).find(x => x.tool_id === t.id);
+                                return (
+                                  <div key={t.id} className="flex flex-col gap-2">
+                                    <ToolRow tool={t} query="" saved={savedIds.has(t.id)} onToggleSave={toggleSave} onOpen={openTool} comparing={compareIds.includes(t.id)} onToggleCompare={toggleCompare} />
+                                    <CollectionNoteField initialNote={ct?.note || ""} onSave={(note)=>updateCollectionNote(col.id, t.id, note)} />
+                                  </div>
+                                );
+                              })}
                             </div>
                           )}
                         </React.Fragment>
@@ -1255,6 +1289,16 @@ function RynovaApp() {
                   </div>
                 );
               }
+              const highestRated = compareTools.reduce((a,b) => (b.rating > a.rating ? b : a), compareTools[0]);
+              const mostAffordable = compareTools.find(t => t.pricing_type === "free") || compareTools.find(t => t.has_free_plan) || [...compareTools].sort((a,b)=>a.pricing_type.localeCompare(b.pricing_type))[0];
+              const easiest = compareTools.find(t => t.skill_level === "beginner") || compareTools[0];
+              const badgesFor = (t) => {
+                const b = [];
+                if (t.id === highestRated.id) b.push({ label:"🏆 Highest rated", color:"#FBBF24" });
+                if (t.id === mostAffordable.id) b.push({ label:"💰 Most affordable", color:"#34D399" });
+                if (t.id === easiest.id) b.push({ label:"🌱 Easiest to start", color:"#60A5FA" });
+                return b;
+              };
               const rows = [
                 { label: "Pricing", render: (t) => <PricingPill type={t.pricing_type} /> },
                 { label: "Price details", render: (t) => <span style={{color:C.sub}}>{t.pricing_details}</span> },
@@ -1268,16 +1312,34 @@ function RynovaApp() {
                 { label: "Best for", render: (t) => <span style={{color:C.sub}}>{t.best_for}</span> },
               ];
               return (
+                <React.Fragment>
+                {compareTools.length > 1 && (
+                  <div className="rounded-2xl p-4 mb-5" style={{ background:C.violetSoft, border:`1px solid ${C.violet}` }}>
+                    <p className="text-xs font-semibold uppercase tracking-wide mb-2" style={{ color:"#C4B5FD" }}>Rynova's take</p>
+                    <p className="text-sm leading-relaxed" style={{ color:C.text }}>
+                      <b>{highestRated.name}</b> has the highest rating ({highestRated.rating}★).{" "}
+                      <b>{mostAffordable.name}</b> is the most affordable{mostAffordable.has_free_plan ? " (free plan available)" : ""}.{" "}
+                      {easiest.id !== highestRated.id && easiest.id !== mostAffordable.id && <React.Fragment><b>{easiest.name}</b> is easiest if you're just starting out.</React.Fragment>}
+                    </p>
+                  </div>
+                )}
                 <div className="overflow-x-auto -mx-5 px-5">
                   <div style={{ minWidth: compareTools.length * 200 }}>
                     <div className="flex gap-3 mb-3">
                       {compareTools.map((t) => (
-                        <div key={t.id} className="flex-1 min-w-[180px] rounded-2xl p-3 flex items-center gap-2" style={{ background:C.card, border:`1px solid ${C.cardBorder}` }}>
-                          <Logo name={t.name} size={32} />
-                          <div className="min-w-0 flex-1">
-                            <p className="text-sm font-semibold truncate" style={{ color:C.text }}>{t.name}</p>
+                        <div key={t.id} className="flex-1 min-w-[180px] rounded-2xl p-3" style={{ background:C.card, border:`1px solid ${C.cardBorder}` }}>
+                          <div className="flex items-center gap-2 mb-2">
+                            <Logo name={t.name} size={32} />
+                            <div className="min-w-0 flex-1">
+                              <p className="text-sm font-semibold truncate" style={{ color:C.text }}>{t.name}</p>
+                            </div>
+                            <button onClick={()=>toggleCompare(t)} style={{color:C.faint}}><Icon.x size={14} /></button>
                           </div>
-                          <button onClick={()=>toggleCompare(t)} style={{color:C.faint}}><Icon.x size={14} /></button>
+                          <div className="flex flex-col gap-1">
+                            {badgesFor(t).map((b,bi) => (
+                              <span key={bi} className="text-[10px] font-medium" style={{ color: b.color }}>{b.label}</span>
+                            ))}
+                          </div>
                         </div>
                       ))}
                     </div>
@@ -1293,6 +1355,7 @@ function RynovaApp() {
                     ))}
                   </div>
                 </div>
+                </React.Fragment>
               );
             })()}
           </section>
