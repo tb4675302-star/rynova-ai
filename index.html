@@ -643,31 +643,40 @@ function IntroSequence({ tools, onDone }) {
 
 function CollectionNoteField({ initialNote, onSave }) {
   const [note, setNote] = useState(initialNote);
-  const [saved, setSaved] = useState(false);
+  const [status, setStatus] = useState(null); // null | "saving" | "saved" | error string
   const dirty = note !== initialNote;
 
-  function doSave() {
-    if (!dirty) return;
-    onSave(note);
-    setSaved(true);
-    setTimeout(() => setSaved(false), 1500);
+  async function doSave() {
+    if (!dirty || status === "saving") return;
+    setStatus("saving");
+    const result = await onSave(note);
+    if (result?.ok) {
+      setStatus("saved");
+      setTimeout(() => setStatus(null), 1500);
+    } else {
+      setStatus(result?.error || "Could not save");
+    }
   }
 
   return (
-    <div className="flex items-center gap-2 -mt-1">
-      <input
-        value={note}
-        onChange={(e)=>{ setNote(e.target.value); setSaved(false); }}
-        onKeyDown={(e)=>{ if (e.key === "Enter") doSave(); }}
-        placeholder="Why did you add this? (optional note)"
-        className="flex-1 min-w-0 text-xs rounded-lg px-3 py-2 outline-none"
-        style={{ background:"transparent", border:`1px dashed ${C.cardBorder}`, color:C.sub }}
-      />
-      {dirty && (
-        <button onClick={doSave} className="text-xs font-medium px-3 py-2 rounded-lg shrink-0" style={{ background:C.violet, color:"white" }}>Save</button>
-      )}
-      {saved && !dirty && (
-        <span className="text-xs shrink-0" style={{ color:"#34D399" }}>✓ Saved</span>
+    <div className="flex flex-col gap-1 -mt-1">
+      <div className="flex items-center gap-2">
+        <input
+          value={note}
+          onChange={(e)=>{ setNote(e.target.value); setStatus(null); }}
+          onKeyDown={(e)=>{ if (e.key === "Enter") doSave(); }}
+          placeholder="Why did you add this? (optional note)"
+          className="flex-1 min-w-0 text-xs rounded-lg px-3 py-2 outline-none"
+          style={{ background:"transparent", border:`1px dashed ${C.cardBorder}`, color:C.sub }}
+        />
+        {dirty && status !== "saving" && (
+          <button onClick={doSave} className="text-xs font-medium px-3 py-2 rounded-lg shrink-0" style={{ background:C.violet, color:"white" }}>Save</button>
+        )}
+        {status === "saving" && <span className="text-xs shrink-0" style={{ color:C.faint }}>Saving…</span>}
+        {status === "saved" && <span className="text-xs shrink-0" style={{ color:"#34D399" }}>✓ Saved</span>}
+      </div>
+      {status && status !== "saving" && status !== "saved" && (
+        <p className="text-xs flex items-center gap-1.5" style={{ color:"#FB7185" }}><Icon.alert size={11} /> {status}</p>
       )}
     </div>
   );
@@ -803,7 +812,9 @@ function RynovaApp() {
   const [pickerTool, setPickerTool] = useState(null);
   const [collectionError, setCollectionError] = useState("");
   const [compareIds, setCompareIds] = useState([]);
-  const [showIntro, setShowIntro] = useState(true);
+  const [showIntro, setShowIntro] = useState(() => {
+    try { return !localStorage.getItem("rynova_intro_seen"); } catch { return true; }
+  });
   const [menuOpen, setMenuOpen] = useState(false);
   const [selectedWorkflowId, setSelectedWorkflowId] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -918,17 +929,27 @@ function RynovaApp() {
   }
 
   async function updateCollectionNote(collectionId, toolId, note) {
+    const prevCollections = collections;
     setCollections((prev) => prev.map((c) => {
       if (c.id !== collectionId) return c;
       return { ...c, collection_tools: c.collection_tools.map((ct) => ct.tool_id === toolId ? { ...ct, note } : ct) };
     }));
     try {
-      await fetch(`${REST}/collection_tools?collection_id=eq.${collectionId}&tool_id=eq.${toolId}`, {
+      const res = await fetch(`${REST}/collection_tools?collection_id=eq.${collectionId}&tool_id=eq.${toolId}`, {
         method: "PATCH",
-        headers: headers(),
+        headers: { ...headers(), Prefer: "return=representation" },
         body: JSON.stringify({ note }),
       });
-    } catch {}
+      const data = await res.json().catch(() => null);
+      if (!res.ok) {
+        setCollections(prevCollections);
+        return { ok: false, error: data?.message || `Save failed (${res.status})` };
+      }
+      return { ok: true };
+    } catch (err) {
+      setCollections(prevCollections);
+      return { ok: false, error: err.message || "Network error" };
+    }
   }
 
   async function toggleInCollection(collectionId, toolId) {
@@ -999,7 +1020,7 @@ function RynovaApp() {
 
   return (
     <React.Fragment>
-      {showIntro && <IntroSequence tools={tools} onDone={() => setShowIntro(false)} />}
+      {showIntro && <IntroSequence tools={tools} onDone={() => { try { localStorage.setItem("rynova_intro_seen", "1"); } catch {} setShowIntro(false); }} />}
     <div className="min-h-screen" style={{ background:C.bg, color:C.text, fontFamily:"'Inter', sans-serif" }}>
       <nav className="sticky top-0 z-40" style={{ background:"rgba(10,10,15,0.9)", borderBottom:`1px solid ${C.cardBorder}` }}>
         <div className="max-w-3xl mx-auto px-5 h-16 flex items-center justify-between">
