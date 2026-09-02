@@ -51,8 +51,23 @@ const SUPABASE_ANON_KEY = "sb_publishable_lqVunSZ6hq86RQdJi1UwNA_xrXfZeDc";
 const REST = `${SUPABASE_URL}/rest/v1`;
 const AUTH = `${SUPABASE_URL}/auth/v1`;
 
+const SESSION_KEY = "rynova_session";
+
 function useSupabase() {
-  const [session, setSession] = useState(null);
+  const [session, setSession] = useState(() => {
+    try {
+      const raw = localStorage.getItem(SESSION_KEY);
+      return raw ? JSON.parse(raw) : null;
+    } catch { return null; }
+  });
+
+  function persist(s) {
+    setSession(s);
+    try {
+      if (s) localStorage.setItem(SESSION_KEY, JSON.stringify(s));
+      else localStorage.removeItem(SESSION_KEY);
+    } catch {}
+  }
 
   const headers = (json = true) => {
     const h = { apikey: SUPABASE_ANON_KEY };
@@ -69,7 +84,7 @@ function useSupabase() {
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data?.msg || data?.error_description || "Sign up failed");
-    if (data.access_token) setSession({ access_token: data.access_token, user: data.user });
+    if (data.access_token) persist({ access_token: data.access_token, refresh_token: data.refresh_token, user: data.user });
     return data;
   }
 
@@ -81,15 +96,29 @@ function useSupabase() {
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data?.error_description || data?.msg || "Login failed");
-    setSession({ access_token: data.access_token, user: data.user });
+    persist({ access_token: data.access_token, refresh_token: data.refresh_token, user: data.user });
     return data;
   }
 
-  function signOut() {
-    setSession(null);
+  async function refreshSession() {
+    if (!session?.refresh_token) return;
+    try {
+      const res = await fetch(`${AUTH}/token?grant_type=refresh_token`, {
+        method: "POST",
+        headers: { apikey: SUPABASE_ANON_KEY, "Content-Type": "application/json" },
+        body: JSON.stringify({ refresh_token: session.refresh_token }),
+      });
+      const data = await res.json();
+      if (res.ok) persist({ access_token: data.access_token, refresh_token: data.refresh_token, user: data.user });
+      else persist(null);
+    } catch {}
   }
 
-  return { session, headers, signUp, signIn, signOut };
+  function signOut() {
+    persist(null);
+  }
+
+  return { session, headers, signUp, signIn, signOut, refreshSession };
 }
 
 /* ---------------- Match scoring (deterministic, not random) ---------------- */
@@ -614,15 +643,33 @@ function IntroSequence({ tools, onDone }) {
 
 function CollectionNoteField({ initialNote, onSave }) {
   const [note, setNote] = useState(initialNote);
+  const [saved, setSaved] = useState(false);
+  const dirty = note !== initialNote;
+
+  function doSave() {
+    if (!dirty) return;
+    onSave(note);
+    setSaved(true);
+    setTimeout(() => setSaved(false), 1500);
+  }
+
   return (
-    <input
-      value={note}
-      onChange={(e)=>setNote(e.target.value)}
-      onBlur={()=>{ if (note !== initialNote) onSave(note); }}
-      placeholder="Why did you add this? (optional note)"
-      className="text-xs rounded-lg px-3 py-2 outline-none -mt-1"
-      style={{ background:"transparent", border:`1px dashed ${C.cardBorder}`, color:C.sub }}
-    />
+    <div className="flex items-center gap-2 -mt-1">
+      <input
+        value={note}
+        onChange={(e)=>{ setNote(e.target.value); setSaved(false); }}
+        onKeyDown={(e)=>{ if (e.key === "Enter") doSave(); }}
+        placeholder="Why did you add this? (optional note)"
+        className="flex-1 min-w-0 text-xs rounded-lg px-3 py-2 outline-none"
+        style={{ background:"transparent", border:`1px dashed ${C.cardBorder}`, color:C.sub }}
+      />
+      {dirty && (
+        <button onClick={doSave} className="text-xs font-medium px-3 py-2 rounded-lg shrink-0" style={{ background:C.violet, color:"white" }}>Save</button>
+      )}
+      {saved && !dirty && (
+        <span className="text-xs shrink-0" style={{ color:"#34D399" }}>✓ Saved</span>
+      )}
+    </div>
   );
 }
 
@@ -740,7 +787,12 @@ const suggestionChips = [
 ];
 
 function RynovaApp() {
-  const { session, headers, signUp, signIn, signOut } = useSupabase();
+  const { session, headers, signUp, signIn, signOut, refreshSession } = useSupabase();
+
+  useEffect(() => {
+    if (session?.refresh_token) refreshSession();
+    // eslint-disable-next-line
+  }, []);
   const [categories, setCategories] = useState([]);
   const [tools, setTools] = useState([]);
   const [savedIds, setSavedIds] = useState(new Set());
